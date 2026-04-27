@@ -1,0 +1,226 @@
+import { Ionicons } from '@expo/vector-icons';
+import { useState } from 'react';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { useAuth } from '@/lib/auth-context';
+import { colors, radius, shadowSm, space } from '@/lib/theme';
+
+type Mode = 'signin' | 'signup';
+
+export default function SignInScreen() {
+  const insets = useSafeAreaInsets();
+  const { signIn, signUp } = useAuth();
+
+  const [mode, setMode] = useState<Mode>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [reveal, setReveal] = useState(false);
+
+  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && password.length >= 6;
+
+  const submit = async () => {
+    if (!valid || submitting) return;
+    setError(null);
+    setInfo(null);
+    setSubmitting(true);
+    const result = mode === 'signin'
+      ? await signIn(email.trim(), password)
+      : await signUp(email.trim(), password);
+    setSubmitting(false);
+
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    if (mode === 'signup' && (result as { needsConfirm?: boolean }).needsConfirm) {
+      setInfo('Check your email to confirm your account, then sign in.');
+      setMode('signin');
+      setPassword('');
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={{ flex: 1, backgroundColor: colors.bg }}>
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingTop: insets.top + 60 }]}
+        keyboardShouldPersistTaps="handled">
+        <View style={styles.brandWrap}>
+          <View style={styles.logoMark}>
+            <Text style={styles.logoChar}>F</Text>
+          </View>
+          <Text style={styles.brand}>FocusFlow</Text>
+          <Text style={styles.tagline}>Less scroll. More learn.</Text>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.title}>{mode === 'signin' ? 'Sign in' : 'Create account'}</Text>
+          <Text style={styles.subtitle}>
+            {mode === 'signin'
+              ? 'Welcome back. Sync your settings across devices.'
+              : 'One account, all your devices stay in sync.'}
+          </Text>
+
+          <Text style={styles.label}>Email</Text>
+          <TextInput
+            value={email}
+            onChangeText={setEmail}
+            placeholder="you@example.com"
+            placeholderTextColor={colors.textMuted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            textContentType="emailAddress"
+            style={styles.input}
+          />
+
+          <Text style={styles.label}>Password</Text>
+          <View style={styles.inputRow}>
+            <TextInput
+              value={password}
+              onChangeText={setPassword}
+              placeholder="At least 6 characters"
+              placeholderTextColor={colors.textMuted}
+              secureTextEntry={!reveal}
+              autoCapitalize="none"
+              autoCorrect={false}
+              textContentType={mode === 'signup' ? 'newPassword' : 'password'}
+              style={[styles.input, { flex: 1 }]}
+              onSubmitEditing={submit}
+              returnKeyType="go"
+            />
+            <Pressable onPress={() => setReveal((v) => !v)} style={styles.iconBtn}>
+              <Ionicons name={reveal ? 'eye-off-outline' : 'eye-outline'} size={18} color={colors.textSecondary} />
+            </Pressable>
+          </View>
+
+          {error && <Text style={styles.errorText}>{error}</Text>}
+          {info && <Text style={styles.infoText}>{info}</Text>}
+
+          <Pressable
+            onPress={submit}
+            disabled={!valid || submitting}
+            style={({ pressed }) => [
+              styles.btn,
+              (!valid || submitting) && styles.btnDisabled,
+              pressed && { opacity: 0.9 },
+            ]}>
+            {submitting
+              ? <ActivityIndicator color={colors.textInverse} />
+              : <Text style={styles.btnText}>{mode === 'signin' ? 'Sign in' : 'Create account'}</Text>}
+          </Pressable>
+
+          <Pressable
+            onPress={() => {
+              setMode((m) => (m === 'signin' ? 'signup' : 'signin'));
+              setError(null);
+              setInfo(null);
+            }}
+            style={styles.switch}>
+            <Text style={styles.switchText}>
+              {mode === 'signin'
+                ? "Don't have an account? "
+                : 'Already have an account? '}
+              <Text style={styles.switchLink}>{mode === 'signin' ? 'Create one' : 'Sign in'}</Text>
+            </Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  content: { paddingHorizontal: 24, paddingBottom: 40, gap: 32 },
+
+  brandWrap: { alignItems: 'center', gap: 8 },
+  logoMark: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadowSm,
+    marginBottom: 4,
+  },
+  logoChar: { color: colors.textInverse, fontSize: 28, fontWeight: '800', letterSpacing: -1 },
+  brand: { color: colors.textPrimary, fontSize: 22, fontWeight: '700', letterSpacing: -0.5 },
+  tagline: { color: colors.textSecondary, fontSize: 13 },
+
+  card: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.xl,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    ...shadowSm,
+  },
+  title: { color: colors.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: -0.5, marginBottom: 4 },
+  subtitle: { color: colors.textSecondary, fontSize: 13, lineHeight: 18, marginBottom: 22 },
+
+  label: {
+    color: colors.textMuted,
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: '700',
+    marginBottom: 6,
+    marginLeft: 2,
+  },
+  input: {
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radius.md,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: colors.textPrimary,
+    fontSize: 14,
+    marginBottom: space.md,
+  },
+  inputRow: { flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 0 },
+  iconBtn: {
+    width: 42,
+    height: 44,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: space.md,
+  },
+
+  btn: {
+    marginTop: 8,
+    backgroundColor: colors.accent,
+    borderRadius: radius.pill,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  btnDisabled: { backgroundColor: colors.neutral },
+  btnText: { color: colors.textInverse, fontWeight: '700', fontSize: 14, letterSpacing: 0.2 },
+
+  switch: { marginTop: 14, alignItems: 'center' },
+  switchText: { color: colors.textSecondary, fontSize: 13 },
+  switchLink: { color: colors.accent, fontWeight: '700' },
+
+  errorText: { color: colors.danger, fontSize: 12, marginTop: 4, marginBottom: 4 },
+  infoText: { color: colors.accent, fontSize: 12, marginTop: 4, marginBottom: 4 },
+});
