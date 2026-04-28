@@ -14,13 +14,14 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth, type SignUpRole } from '@/lib/auth-context';
+import { FontAwesome } from '@expo/vector-icons';
 import { colors, radius, shadowSm, space } from '@/lib/theme';
 
 type Mode = 'signin' | 'signup';
 
 export default function SignInScreen() {
   const insets = useSafeAreaInsets();
-  const { signIn, signUp } = useAuth();
+  const { signIn, signUp, signInWithGoogle } = useAuth();
 
   const [mode, setMode] = useState<Mode>('signin');
   const [role, setRole] = useState<SignUpRole>('parent');
@@ -28,6 +29,7 @@ export default function SignInScreen() {
   const [password, setPassword] = useState('');
   const [familyCode, setFamilyCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [googleSubmitting, setGoogleSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [reveal, setReveal] = useState(false);
@@ -60,6 +62,25 @@ export default function SignInScreen() {
     if (mode === 'signup' && role === 'parent' && (result as { familyCode?: string }).familyCode) {
       // Family code surfaces in Settings → Family card; no modal needed
       setInfo(`Account ready. Your family code is ${(result as { familyCode?: string }).familyCode}.`);
+    }
+  };
+
+  const continueWithGoogle = async () => {
+    if (googleSubmitting) return;
+    setError(null);
+    setInfo(null);
+    setGoogleSubmitting(true);
+    const result = await signInWithGoogle({
+      role: mode === 'signup' ? role : undefined,
+      familyCode: mode === 'signup' && role === 'student' ? familyCode.trim() : undefined,
+    });
+    setGoogleSubmitting(false);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    if (result.needsRoleSetup) {
+      setInfo("Signed in with Google. Switch to 'Create one' below and pick Parent or Student to finish setup.");
     }
   };
 
@@ -179,6 +200,30 @@ export default function SignInScreen() {
               : <Text style={styles.btnText}>{mode === 'signin' ? 'Sign in' : 'Create account'}</Text>}
           </Pressable>
 
+          <View style={styles.orRow}>
+            <View style={styles.orLine} />
+            <Text style={styles.orText}>or</Text>
+            <View style={styles.orLine} />
+          </View>
+
+          <Pressable
+            onPress={continueWithGoogle}
+            disabled={googleSubmitting}
+            style={({ pressed }) => [
+              styles.googleBtn,
+              googleSubmitting && { opacity: 0.7 },
+              pressed && { opacity: 0.85 },
+            ]}>
+            {googleSubmitting
+              ? <ActivityIndicator color={colors.textPrimary} />
+              : (
+                <>
+                  <FontAwesome name="google" size={16} color={colors.textPrimary} style={{ marginRight: 8 }} />
+                  <Text style={styles.googleBtnText}>Continue with Google</Text>
+                </>
+              )}
+          </Pressable>
+
           <Pressable
             onPress={() => {
               setMode((m) => (m === 'signin' ? 'signup' : 'signin'));
@@ -291,4 +336,20 @@ const styles = StyleSheet.create({
   roleBtnActive: { backgroundColor: colors.accentSoft, borderColor: colors.accentBorder },
   roleBtnText: { color: colors.textSecondary, fontSize: 13, fontWeight: '700' },
   roleBtnTextActive: { color: colors.accent },
+
+  orRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 14 },
+  orLine: { flex: 1, height: 1, backgroundColor: colors.borderSubtle },
+  orText: { color: colors.textMuted, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 },
+
+  googleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    paddingVertical: 12,
+  },
+  googleBtnText: { color: colors.textPrimary, fontWeight: '700', fontSize: 14, letterSpacing: 0.2 },
 });
