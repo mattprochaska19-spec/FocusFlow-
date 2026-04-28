@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useAuth } from '@/lib/auth-context';
+import { useAuth, type SignUpRole } from '@/lib/auth-context';
 import { colors, radius, shadowSm, space } from '@/lib/theme';
 
 type Mode = 'signin' | 'signup';
@@ -23,14 +23,19 @@ export default function SignInScreen() {
   const { signIn, signUp } = useAuth();
 
   const [mode, setMode] = useState<Mode>('signin');
+  const [role, setRole] = useState<SignUpRole>('parent');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [familyCode, setFamilyCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [reveal, setReveal] = useState(false);
 
-  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && password.length >= 6;
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const passwordOk = password.length >= 6;
+  const familyCodeOk = mode === 'signin' || role === 'parent' || familyCode.trim().length >= 4;
+  const valid = emailOk && passwordOk && familyCodeOk;
 
   const submit = async () => {
     if (!valid || submitting) return;
@@ -39,7 +44,7 @@ export default function SignInScreen() {
     setSubmitting(true);
     const result = mode === 'signin'
       ? await signIn(email.trim(), password)
-      : await signUp(email.trim(), password);
+      : await signUp(email.trim(), password, { role, familyCode: familyCode.trim() });
     setSubmitting(false);
 
     if (result.error) {
@@ -50,6 +55,11 @@ export default function SignInScreen() {
       setInfo('Check your email to confirm your account, then sign in.');
       setMode('signin');
       setPassword('');
+      return;
+    }
+    if (mode === 'signup' && role === 'parent' && (result as { familyCode?: string }).familyCode) {
+      // Family code surfaces in Settings → Family card; no modal needed
+      setInfo(`Account ready. Your family code is ${(result as { familyCode?: string }).familyCode}.`);
     }
   };
 
@@ -73,8 +83,52 @@ export default function SignInScreen() {
           <Text style={styles.subtitle}>
             {mode === 'signin'
               ? 'Welcome back. Sync your settings across devices.'
-              : 'One account, all your devices stay in sync.'}
+              : role === 'parent'
+                ? "Set up rules and share a family code with your child."
+                : "Enter your parent's family code to apply their rules to this device."}
           </Text>
+
+          {mode === 'signup' && (
+            <>
+              <Text style={styles.label}>I am a</Text>
+              <View style={styles.roleRow}>
+                <Pressable
+                  onPress={() => setRole('parent')}
+                  style={({ pressed }) => [
+                    styles.roleBtn,
+                    role === 'parent' && styles.roleBtnActive,
+                    pressed && { opacity: 0.9 },
+                  ]}>
+                  <Text style={[styles.roleBtnText, role === 'parent' && styles.roleBtnTextActive]}>Parent</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setRole('student')}
+                  style={({ pressed }) => [
+                    styles.roleBtn,
+                    role === 'student' && styles.roleBtnActive,
+                    pressed && { opacity: 0.9 },
+                  ]}>
+                  <Text style={[styles.roleBtnText, role === 'student' && styles.roleBtnTextActive]}>Student</Text>
+                </Pressable>
+              </View>
+            </>
+          )}
+
+          {mode === 'signup' && role === 'student' && (
+            <>
+              <Text style={styles.label}>Family code</Text>
+              <TextInput
+                value={familyCode}
+                onChangeText={(v) => setFamilyCode(v.toUpperCase())}
+                placeholder="ABC123"
+                placeholderTextColor={colors.textMuted}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                maxLength={8}
+                style={[styles.input, { letterSpacing: 2, fontWeight: '700' }]}
+              />
+            </>
+          )}
 
           <Text style={styles.label}>Email</Text>
           <TextInput
@@ -223,4 +277,18 @@ const styles = StyleSheet.create({
 
   errorText: { color: colors.danger, fontSize: 12, marginTop: 4, marginBottom: 4 },
   infoText: { color: colors.accent, fontSize: 12, marginTop: 4, marginBottom: 4 },
+
+  roleRow: { flexDirection: 'row', gap: 8, marginBottom: space.md },
+  roleBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    alignItems: 'center',
+  },
+  roleBtnActive: { backgroundColor: colors.accentSoft, borderColor: colors.accentBorder },
+  roleBtnText: { color: colors.textSecondary, fontSize: 13, fontWeight: '700' },
+  roleBtnTextActive: { color: colors.accent },
 });

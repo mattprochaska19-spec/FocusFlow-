@@ -44,6 +44,13 @@ export type TodayStats = {
 
 export type Override = { minutesAdded: number; expiresAt: number } | null;
 
+export type Profile = {
+  userId: string;
+  role: 'parent' | 'student';
+  familyCode: string | null;
+  parentId: string | null;
+};
+
 export type FocusState = {
   focusModeEnabled: boolean;
   apiKey: string;
@@ -122,6 +129,7 @@ export type RecordWatchInput = {
 type FocusContextValue = {
   state: FocusState;
   hydrated: boolean;
+  profile: Profile | null;
   setFocusMode: (enabled: boolean) => void;
   toggleApp: (id: AppId) => void;
   updateApp: (id: AppId, patch: Partial<Omit<LimitedApp, 'id'>>) => void;
@@ -139,6 +147,7 @@ type FocusContextValue = {
   setAllowOverride: (allow: boolean) => void;
   effectiveDailyLimitMinutes: number;
   resetToday: () => void;
+  reloadProfile: () => void;
 };
 
 const FocusContext = createContext<FocusContextValue | null>(null);
@@ -147,6 +156,8 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<FocusState>(DEFAULT_STATE);
   const [hydrated, setHydrated] = useState(false);
   const [cloudHydrated, setCloudHydrated] = useState(false);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const { session } = useAuth();
 
   // Hashes of last cloud-known settings/today blobs, to prevent realtime echo
@@ -240,6 +251,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     // Just signed out — wipe local state so nothing leaks between accounts
     if (prevUserId && !userId) {
       setCloudHydrated(false);
+      setProfile(null);
       lastSettingsHashRef.current = '';
       lastTodayHashRef.current = '';
       setState(DEFAULT_STATE);
@@ -252,9 +264,34 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     setCloudHydrated(false);
     (async () => {
+      // Step 1: load own profile (role + parent_id determine where settings come from)
+      const { data: profileRow } = await supabase
+        .from('profiles')
+        .select('user_id, role, family_code, parent_id')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (cancelled) return;
+
+      const myProfile: Profile | null = profileRow
+        ? {
+            userId: profileRow.user_id,
+            role: profileRow.role as 'parent' | 'student',
+            familyCode: profileRow.family_code ?? null,
+            parentId: profileRow.parent_id ?? null,
+          }
+        : null;
+      setProfile(myProfile);
+
+      // Settings come from the parent's row for students, own row for parents
+      const settingsOwnerId =
+        myProfile?.role === 'student' ? myProfile.parentId : userId;
+
+      // Step 2: load settings (from owner) and today's stats (always self)
       const today = todayKey();
       const [settingsRes, statsRes] = await Promise.all([
-        supabase.from('user_settings').select('data').eq('user_id', userId).maybeSingle(),
+        settingsOwnerId
+          ? supabase.from('user_settings').select('data').eq('user_id', settingsOwnerId).maybeSingle()
+          : Promise.resolve({ data: null }),
         supabase.from('daily_stats').select('data').eq('user_id', userId).eq('date', today).maybeSingle(),
       ]);
       if (cancelled) return;
@@ -280,11 +317,13 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       setCloudHydrated(true);
     })();
     return () => { cancelled = true; };
-  }, [session?.user.id]);
+  }, [session?.user.id, reloadKey]);
 
   // ─── Supabase: debounced write of settings on change ──────────────────────
+  // Only parents persist settings; students are read-only consumers of their parent's row.
   useEffect(() => {
-    if (!cloudHydrated || !session) return;
+    if (!cloudHydrated || !session || !profile) return;
+    if (profile.role !== 'parent') return;
     const { today, ...settings } = state;
     const settingsHash = JSON.stringify(settings);
     if (settingsHash === lastSettingsHashRef.current) return;
@@ -299,7 +338,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
         });
     }, 1000);
     return () => clearTimeout(handle);
-  }, [state, cloudHydrated, session]);
+  }, [state, cloudHydrated, session, profile]);
 
   // ─── Supabase: debounced write of today's stats on change ─────────────────
   useEffect(() => {
@@ -323,15 +362,17 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   }, [state.today, cloudHydrated, session]);
 
   // ─── Supabase realtime: settings sync across devices ──────────────────────
+  // Subscribes to whoever owns the rules: own row for parents, parent's row for students.
   useEffect(() => {
-    if (!session) return;
-    const userId = session.user.id;
+    if (!session || !profile) return;
+    const ownerId = profile.role === 'student' ? profile.parentId : session.user.id;
+    if (!ownerId) return;
 
     const channel = supabase
-      .channel(`user_settings:${userId}`)
+      .channel(`user_settings:${ownerId}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'user_settings', filter: `user_id=eq.${userId}` },
+        { event: '*', schema: 'public', table: 'user_settings', filter: `user_id=eq.${ownerId}` },
         (payload) => {
           const newData = (payload.new as { data?: Partial<FocusState> } | null)?.data;
           if (!newData) return;
@@ -346,7 +387,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [session?.user.id]);
+  }, [session?.user.id, profile?.role, profile?.parentId]);
 
   const setFocusMode = useCallback((enabled: boolean) => {
     setState((s) => ({ ...s, focusModeEnabled: enabled }));
@@ -488,6 +529,12 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     setState((s) => ({ ...s, today: freshTodayStats() }));
   }, []);
 
+  // Re-runs the full profile + settings load. Use after a profile change
+  // (e.g. linking to a parent via family code).
+  const reloadProfile = useCallback(() => {
+    setReloadKey((k) => k + 1);
+  }, []);
+
   const effectiveDailyLimitMinutes = useMemo(() => {
     if (!state.allowOverride) return state.dailyLimitMinutes;
     const overrideMinutes = state.override && state.override.expiresAt > Date.now() ? state.override.minutesAdded : 0;
@@ -497,6 +544,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const value: FocusContextValue = {
     state,
     hydrated,
+    profile,
     setFocusMode,
     toggleApp,
     updateApp,
@@ -514,6 +562,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     setAllowOverride,
     effectiveDailyLimitMinutes,
     resetToday,
+    reloadProfile,
   };
 
   return <FocusContext.Provider value={value}>{children}</FocusContext.Provider>;

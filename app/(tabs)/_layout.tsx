@@ -1,9 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 
+import { useFocus } from '@/lib/focus-context';
 import { colors } from '@/lib/theme';
 
 export default function TabLayout() {
+  const { profile } = useFocus();
+  const isStudent = profile?.role === 'student';
+
   return (
     <Tabs
       screenOptions={{
@@ -38,8 +42,10 @@ export default function TabLayout() {
       <Tabs.Screen
         name="settings"
         options={{
-          title: 'Settings',
-          tabBarIcon: ({ color, size }) => <Ionicons name="settings-outline" size={size - 2} color={color} />,
+          title: isStudent ? 'Account' : 'Settings',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name={isStudent ? 'person-outline' : 'settings-outline'} size={size - 2} color={color} />
+          ),
         }}
       />
     </Tabs>

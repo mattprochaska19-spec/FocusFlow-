@@ -3,6 +3,7 @@ import Slider from '@react-native-community/slider';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -20,6 +21,7 @@ import { ChannelSearch } from '@/components/channel-search';
 import { decideAccess, describeDecision, type AccessDecision } from '@/lib/access';
 import { useAuth } from '@/lib/auth-context';
 import { useFocus } from '@/lib/focus-context';
+import { supabase } from '@/lib/supabase';
 import { colors, radius, shadowSm, space } from '@/lib/theme';
 import { extractVideoId, type ChannelSearchResult } from '@/lib/youtube-filter';
 
@@ -44,6 +46,9 @@ export default function SettingsScreen() {
     effectiveDailyLimitMinutes,
   } = useFocus();
 
+  const { profile } = useFocus();
+  const isStudent = profile?.role === 'student';
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -52,55 +57,65 @@ export default function SettingsScreen() {
         style={styles.container}
         contentContainerStyle={[styles.content, { paddingTop: insets.top + space.lg, paddingBottom: 48 }]}
         keyboardShouldPersistTaps="handled">
-        <Text style={styles.pageTitle}>Settings</Text>
-        <Text style={styles.pageSub}>Tune the rules that keep you focused.</Text>
+        <Text style={styles.pageTitle}>{isStudent ? 'Account' : 'Settings'}</Text>
+        <Text style={styles.pageSub}>
+          {isStudent
+            ? 'Your parent manages the rules. They sync to this device automatically.'
+            : 'Tune the rules that keep you focused.'}
+        </Text>
 
-        <ApiKeySection apiKey={state.apiKey} onChange={setApiKey} />
+        <FamilySection />
 
-        <TestAccessSection />
+        {!isStudent && (
+          <>
+            <ApiKeySection apiKey={state.apiKey} onChange={setApiKey} />
 
-        <DailyLimitSection
-          minutes={state.dailyLimitMinutes}
-          effective={effectiveDailyLimitMinutes}
-          onSet={setDailyLimitMinutes}
-        />
+            <TestAccessSection />
 
-        <BehaviorSection
-          allowFinishCurrentVideo={state.allowFinishCurrentVideo}
-          allowOverride={state.allowOverride}
-          onSetAllowFinishCurrentVideo={setAllowFinishCurrentVideo}
-          onSetAllowOverride={setAllowOverride}
-        />
+            <DailyLimitSection
+              minutes={state.dailyLimitMinutes}
+              effective={effectiveDailyLimitMinutes}
+              onSet={setDailyLimitMinutes}
+            />
 
-        {state.allowOverride && (
-          <OverrideSection
-            override={state.override}
-            dailyLimit={state.dailyLimitMinutes}
-            effective={effectiveDailyLimitMinutes}
-            onAdd={addOverride}
-          />
+            <BehaviorSection
+              allowFinishCurrentVideo={state.allowFinishCurrentVideo}
+              allowOverride={state.allowOverride}
+              onSetAllowFinishCurrentVideo={setAllowFinishCurrentVideo}
+              onSetAllowOverride={setAllowOverride}
+            />
+
+            {state.allowOverride && (
+              <OverrideSection
+                override={state.override}
+                dailyLimit={state.dailyLimitMinutes}
+                effective={effectiveDailyLimitMinutes}
+                onAdd={addOverride}
+              />
+            )}
+
+            <EducationalChannelsSection
+              channels={state.educationalChannels}
+              apiKey={state.apiKey}
+              onAdd={addEducationalChannel}
+              onRemove={removeEducationalChannel}
+            />
+
+            <CreatorAllowancesSection
+              allowances={state.creatorAllowances}
+              apiKey={state.apiKey}
+              onAdd={addCreatorAllowance}
+              onRemove={removeCreatorAllowance}
+            />
+
+            <ChannelLimitsSection
+              limits={state.channelLimits}
+              apiKey={state.apiKey}
+              onSet={setChannelLimit}
+              onRemove={removeChannelLimit}
+            />
+          </>
         )}
-
-        <EducationalChannelsSection
-          channels={state.educationalChannels}
-          apiKey={state.apiKey}
-          onAdd={addEducationalChannel}
-          onRemove={removeEducationalChannel}
-        />
-
-        <CreatorAllowancesSection
-          allowances={state.creatorAllowances}
-          apiKey={state.apiKey}
-          onAdd={addCreatorAllowance}
-          onRemove={removeCreatorAllowance}
-        />
-
-        <ChannelLimitsSection
-          limits={state.channelLimits}
-          apiKey={state.apiKey}
-          onSet={setChannelLimit}
-          onRemove={removeChannelLimit}
-        />
 
         <AccountSection />
       </ScrollView>
@@ -108,16 +123,252 @@ export default function SettingsScreen() {
   );
 }
 
+function FamilySection() {
+  const { profile } = useFocus();
+  if (!profile) return null;
+
+  if (profile.role === 'parent') {
+    return (
+      <Card icon="people-outline" title="Family">
+        <Text style={styles.familyHint}>Share this code with your child to link their device.</Text>
+        <View style={styles.familyCodeBox}>
+          <Text style={styles.familyCodeText}>{profile.familyCode ?? '— —'}</Text>
+        </View>
+        <Text style={styles.hint}>
+          When your child signs up and enters this code, your rules apply to their device automatically.
+        </Text>
+
+        <View style={styles.toggleDivider} />
+
+        <ChildrenList />
+      </Card>
+    );
+  }
+
+  return (
+    <Card icon="people-outline" title="Family">
+      {profile.parentId ? (
+        <>
+          <Text style={styles.familyHint}>Linked to a parent account.</Text>
+          <View style={[styles.familyCodeBox, { backgroundColor: colors.accentSoft, borderColor: colors.accentBorder }]}>
+            <Ionicons name="checkmark-circle" size={20} color={colors.accent} style={{ marginRight: 8 }} />
+            <Text style={[styles.familyCodeText, { fontSize: 14, letterSpacing: -0.2 }]}>Rules sync from parent</Text>
+          </View>
+        </>
+      ) : (
+        <LinkToParentForm />
+      )}
+    </Card>
+  );
+}
+
+function LinkToParentForm() {
+  const { reloadProfile } = useFocus();
+  const [code, setCode] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const valid = code.trim().length >= 4;
+
+  const submit = async () => {
+    if (!valid || submitting) return;
+    setError(null);
+    setSubmitting(true);
+    const { error: rpcErr } = await supabase.rpc('signup_as_student', { code: code.trim() });
+    setSubmitting(false);
+    if (rpcErr) {
+      setError(rpcErr.message);
+      return;
+    }
+    setCode('');
+    reloadProfile();
+  };
+
+  return (
+    <>
+      <Text style={styles.familyHint}>
+        Enter the 6-character family code your parent shared to link this account.
+      </Text>
+      <TextInput
+        value={code}
+        onChangeText={(v) => { setCode(v.toUpperCase()); setError(null); }}
+        placeholder="ABC123"
+        placeholderTextColor={colors.textMuted}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        maxLength={8}
+        returnKeyType="go"
+        onSubmitEditing={submit}
+        style={[styles.input, styles.linkCodeInput]}
+      />
+      <Pressable
+        onPress={submit}
+        disabled={!valid || submitting}
+        style={({ pressed }) => [
+          styles.linkBtn,
+          (!valid || submitting) && styles.addBtnDisabled,
+          pressed && { opacity: 0.9 },
+        ]}>
+        {submitting
+          ? <ActivityIndicator color={colors.textInverse} />
+          : <Text style={styles.addBtnText}>Link to parent</Text>}
+      </Pressable>
+      {error && <Text style={styles.errorText}>{error}</Text>}
+    </>
+  );
+}
+
+type LinkedChild = {
+  user_id: string;
+  email: string;
+  entertainment_seconds: number;
+  educational_seconds: number;
+  video_count: number;
+};
+
+function ChildrenList() {
+  const { state, effectiveDailyLimitMinutes } = useFocus();
+  const [children, setChildren] = useState<LinkedChild[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const todayDate = new Date().toISOString().split('T')[0];
+
+  const refresh = async () => {
+    setLoading(true);
+    setError(null);
+    const { data, error } = await supabase.rpc('get_my_children_with_stats', { stats_date: todayDate });
+    setLoading(false);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setChildren((data ?? []) as LinkedChild[]);
+  };
+
+  useEffect(() => { refresh(); }, []);
+
+  // Realtime: refetch whenever any reachable daily_stats row changes.
+  // RLS limits this to own + children's rows, so this fires on either parent or child writes.
+  useEffect(() => {
+    const channel = supabase
+      .channel('children-stats-watch')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'daily_stats' },
+        () => { refresh(); }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <View>
+      <View style={styles.childrenHeader}>
+        <Text style={styles.childrenTitle}>Linked children</Text>
+        <Pressable onPress={refresh} hitSlop={8} disabled={loading}>
+          {loading
+            ? <ActivityIndicator size="small" color={colors.textMuted} />
+            : <Ionicons name="refresh" size={16} color={colors.textSecondary} />}
+        </Pressable>
+      </View>
+
+      {error && <Text style={styles.errorText}>{error}</Text>}
+
+      {children === null && !loading && (
+        <Text style={styles.empty}>—</Text>
+      )}
+
+      {children?.length === 0 && (
+        <Text style={styles.empty}>
+          No children linked yet. Share your family code so they can sign up and connect.
+        </Text>
+      )}
+
+      {children && children.length > 0 && (
+        <View style={{ gap: 8 }}>
+          {children.map((c) => {
+            const entMins = Math.floor(c.entertainment_seconds / 60);
+            const eduMins = Math.floor(c.educational_seconds / 60);
+            const limit = effectiveDailyLimitMinutes;
+            const overLimit = state.focusModeEnabled && entMins >= limit;
+            return (
+              <View key={c.user_id} style={styles.childRow}>
+                <View style={styles.childAvatar}>
+                  <Text style={styles.childAvatarText}>{c.email.charAt(0).toUpperCase()}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.childEmail} numberOfLines={1}>{c.email}</Text>
+                  <View style={styles.childStatsRow}>
+                    <Text style={[styles.childStat, overLimit && { color: colors.danger }]}>
+                      {entMins}m / {limit}m entertainment
+                    </Text>
+                    <Text style={styles.childStatDivider}>·</Text>
+                    <Text style={[styles.childStat, { color: colors.accent }]}>{eduMins}m edu</Text>
+                  </View>
+                  <Text style={styles.childStatSecondary}>{c.video_count} videos today</Text>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
 function AccountSection() {
-  const { session, signOut } = useAuth();
+  const { session, signOut, deleteAccount } = useAuth();
+  const { profile } = useFocus();
+  const [deleting, setDeleting] = useState(false);
   if (!session) return null;
+
+  const isParent = profile?.role === 'parent';
+
+  const confirmDelete = () => {
+    const message = isParent
+      ? "This permanently removes your account, settings, and all activity history. Linked children will be unlinked but their accounts won't be deleted. This can't be undone."
+      : "This permanently removes your account and all activity history. You'll need to sign up again with your parent's family code to use FocusFlow. This can't be undone.";
+
+    Alert.alert(
+      'Delete account?',
+      message,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            const { error } = await deleteAccount();
+            setDeleting(false);
+            if (error) {
+              Alert.alert('Could not delete account', error);
+            }
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
   return (
     <Card icon="person-circle-outline" title="Account">
       <Text style={styles.accountEmail}>{session.user.email}</Text>
       <Pressable
         onPress={signOut}
+        disabled={deleting}
         style={({ pressed }) => [styles.signOutBtn, pressed && { opacity: 0.85 }]}>
         <Text style={styles.signOutText}>Sign out</Text>
+      </Pressable>
+      <Pressable
+        onPress={confirmDelete}
+        disabled={deleting}
+        style={({ pressed }) => [styles.deleteBtn, pressed && { opacity: 0.85 }]}>
+        {deleting
+          ? <ActivityIndicator color={colors.danger} />
+          : <Text style={styles.deleteText}>Delete account</Text>}
       </Pressable>
     </Card>
   );
@@ -817,6 +1068,80 @@ const styles = StyleSheet.create({
   decisionChannel: { color: colors.textSecondary, fontSize: 13, marginBottom: 8 },
   decisionReason: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
 
+  familyHint: { color: colors.textSecondary, fontSize: 13, marginBottom: 10, lineHeight: 18 },
+  familyCodeBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radius.md,
+    marginBottom: 4,
+  },
+  familyCodeText: {
+    color: colors.textPrimary,
+    fontSize: 26,
+    fontWeight: '800',
+    letterSpacing: 4,
+    fontVariant: ['tabular-nums'],
+  },
+
+  childrenHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  childrenTitle: {
+    color: colors.textMuted,
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 1.4,
+    fontWeight: '700',
+  },
+  childRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 12,
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radius.md,
+  },
+  childAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  childAvatarText: { color: colors.textInverse, fontSize: 15, fontWeight: '700' },
+  childEmail: { color: colors.textPrimary, fontSize: 14, fontWeight: '600', letterSpacing: -0.2 },
+  childStatsRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6, marginTop: 4 },
+  childStat: { color: colors.textSecondary, fontSize: 12, fontWeight: '600' },
+  childStatDivider: { color: colors.textMuted, fontSize: 12 },
+  childStatSecondary: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
+
+  linkCodeInput: {
+    fontSize: 18,
+    fontWeight: '700',
+    letterSpacing: 4,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  linkBtn: {
+    backgroundColor: colors.accent,
+    borderRadius: radius.pill,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+
   accountEmail: { color: colors.textSecondary, fontSize: 13, marginBottom: 12 },
   signOutBtn: {
     backgroundColor: colors.surfaceMuted,
@@ -827,4 +1152,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   signOutText: { color: colors.danger, fontSize: 14, fontWeight: '700', letterSpacing: 0.2 },
+
+  deleteBtn: {
+    marginTop: 10,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: colors.dangerBorder,
+    borderRadius: radius.pill,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  deleteText: { color: colors.danger, fontSize: 13, fontWeight: '600', letterSpacing: 0.2 },
 });
