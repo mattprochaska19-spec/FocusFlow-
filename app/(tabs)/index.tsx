@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AssignmentsSection } from '@/components/assignments-section';
 import { BlockModal } from '@/components/block-modal';
 import { decideAccess, type AccessDecision } from '@/lib/access';
 import { checkVideoCached } from '@/lib/cache';
@@ -119,6 +120,8 @@ export default function HomeScreen() {
           </View>
         </View>
       </View>
+
+      <AssignmentsSection />
 
       <FilterTester />
     </ScrollView>

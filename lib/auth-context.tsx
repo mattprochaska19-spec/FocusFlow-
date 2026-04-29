@@ -91,7 +91,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signInWithGoogle: AuthContextValue['signInWithGoogle'] = async ({ role, familyCode }) => {
-    const redirectTo = AuthSession.makeRedirectUri();
+    // The path matters: without it, iOS Safari treats `scheme://host:port?query` as malformed
+    const redirectTo = AuthSession.makeRedirectUri({ path: 'auth/callback' });
+    console.log('[FocusFlow] Google OAuth redirectTo:', redirectTo);
 
     // Ask Supabase for the Google OAuth URL. skipBrowserRedirect lets us drive
     // the in-app browser ourselves so the redirect can come back as a deep link.
@@ -107,8 +109,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error || !data?.url) return { error: error?.message ?? 'Could not start Google sign-in' };
 
     const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+    console.log('[FocusFlow] OAuth result:', JSON.stringify(result));
     if (result.type === 'cancel' || result.type === 'dismiss') return { error: 'Sign-in cancelled' };
-    if (result.type !== 'success') return { error: 'Sign-in failed' };
+    if (result.type !== 'success') return { error: `Sign-in failed: ${result.type}` };
 
     // Supabase returns the session in the URL fragment; pull tokens and set the session
     const { params, errorCode } = QueryParams.getQueryParams(result.url);

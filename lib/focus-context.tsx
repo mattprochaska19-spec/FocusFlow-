@@ -51,6 +51,20 @@ export type Profile = {
   parentId: string | null;
 };
 
+export type AssignmentStatus = 'pending_review' | 'completed' | 'rejected';
+
+export type Assignment = {
+  id: string;
+  studentUserId: string;
+  googleEventId: string;
+  title: string;
+  dueAt: string | null;
+  status: AssignmentStatus;
+  completedAt: string | null;
+  minutesEarned: number;
+  createdAt: string;
+};
+
 export type FocusState = {
   focusModeEnabled: boolean;
   apiKey: string;
@@ -65,6 +79,7 @@ export type FocusState = {
   override: Override;
   allowFinishCurrentVideo: boolean;
   allowOverride: boolean;
+  minutesPerAssignment: number;
 };
 
 const DEFAULT_LIMITED_APPS: LimitedApp[] = [
@@ -113,6 +128,7 @@ const DEFAULT_STATE: FocusState = {
   override: null,
   allowFinishCurrentVideo: true,
   allowOverride: true,
+  minutesPerAssignment: 15,
 };
 
 const STORAGE_KEY = 'focusflow_state_v1';
@@ -130,6 +146,9 @@ type FocusContextValue = {
   state: FocusState;
   hydrated: boolean;
   profile: Profile | null;
+  assignments: Assignment[];
+  earnedMinutesToday: number;
+  setMinutesPerAssignment: (minutes: number) => void;
   setFocusMode: (enabled: boolean) => void;
   toggleApp: (id: AppId) => void;
   updateApp: (id: AppId, patch: Partial<Omit<LimitedApp, 'id'>>) => void;
@@ -157,6 +176,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [cloudHydrated, setCloudHydrated] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
   const { session } = useAuth();
 
@@ -286,15 +306,19 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       const settingsOwnerId =
         myProfile?.role === 'student' ? myProfile.parentId : userId;
 
-      // Step 2: load settings (from owner) and today's stats (always self)
+      // Step 2: load settings (from owner), today's stats (always self), and assignments
+      // (RLS filters automatically — students see own, parents see children's)
       const today = todayKey();
-      const [settingsRes, statsRes] = await Promise.all([
+      const [settingsRes, statsRes, assignmentsRes] = await Promise.all([
         settingsOwnerId
           ? supabase.from('user_settings').select('data').eq('user_id', settingsOwnerId).maybeSingle()
           : Promise.resolve({ data: null }),
         supabase.from('daily_stats').select('data').eq('user_id', userId).eq('date', today).maybeSingle(),
+        supabase.from('assignments').select('*').order('created_at', { ascending: false }),
       ]);
       if (cancelled) return;
+
+      setAssignments(mapAssignments(assignmentsRes.data ?? []));
 
       setState((prev) => {
         const next: FocusState = { ...DEFAULT_STATE, ...prev };
@@ -360,6 +384,26 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     }, 2000);
     return () => clearTimeout(handle);
   }, [state.today, cloudHydrated, session]);
+
+  // ─── Supabase realtime: assignments (claims, approvals, rejections) ──────
+  useEffect(() => {
+    if (!session) return;
+    const channel = supabase
+      .channel('assignments-watch')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'assignments' },
+        async () => {
+          const { data } = await supabase
+            .from('assignments')
+            .select('*')
+            .order('created_at', { ascending: false });
+          setAssignments(mapAssignments(data ?? []));
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [session?.user.id]);
 
   // ─── Supabase realtime: settings sync across devices ──────────────────────
   // Subscribes to whoever owns the rules: own row for parents, parent's row for students.
@@ -535,11 +579,34 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     setReloadKey((k) => k + 1);
   }, []);
 
+  // Sum minutes earned by completing assignments today. Only the student's own
+  // approved-today assignments count toward their personal earned bonus.
+  const earnedMinutesToday = useMemo(() => {
+    if (!session) return 0;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return assignments
+      .filter(
+        (a) =>
+          a.studentUserId === session.user.id &&
+          a.status === 'completed' &&
+          a.completedAt &&
+          new Date(a.completedAt) >= start
+      )
+      .reduce((sum, a) => sum + a.minutesEarned, 0);
+  }, [assignments, session?.user.id]);
+
   const effectiveDailyLimitMinutes = useMemo(() => {
-    if (!state.allowOverride) return state.dailyLimitMinutes;
-    const overrideMinutes = state.override && state.override.expiresAt > Date.now() ? state.override.minutesAdded : 0;
-    return state.dailyLimitMinutes + overrideMinutes;
-  }, [state.dailyLimitMinutes, state.override, state.allowOverride]);
+    const overrideMinutes =
+      state.allowOverride && state.override && state.override.expiresAt > Date.now()
+        ? state.override.minutesAdded
+        : 0;
+    return state.dailyLimitMinutes + overrideMinutes + earnedMinutesToday;
+  }, [state.dailyLimitMinutes, state.override, state.allowOverride, earnedMinutesToday]);
+
+  const setMinutesPerAssignment = useCallback((minutes: number) => {
+    setState((s) => ({ ...s, minutesPerAssignment: Math.max(1, minutes) }));
+  }, []);
 
   const value: FocusContextValue = {
     state,
@@ -560,12 +627,41 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     addOverride,
     setAllowFinishCurrentVideo,
     setAllowOverride,
+    setMinutesPerAssignment,
+    assignments,
+    earnedMinutesToday,
     effectiveDailyLimitMinutes,
     resetToday,
     reloadProfile,
   };
 
   return <FocusContext.Provider value={value}>{children}</FocusContext.Provider>;
+}
+
+type AssignmentRow = {
+  id: string;
+  student_user_id: string;
+  google_event_id: string;
+  title: string;
+  due_at: string | null;
+  status: AssignmentStatus;
+  completed_at: string | null;
+  minutes_earned: number;
+  created_at: string;
+};
+
+function mapAssignments(rows: AssignmentRow[]): Assignment[] {
+  return rows.map((r) => ({
+    id: r.id,
+    studentUserId: r.student_user_id,
+    googleEventId: r.google_event_id,
+    title: r.title,
+    dueAt: r.due_at,
+    status: r.status,
+    completedAt: r.completed_at,
+    minutesEarned: r.minutes_earned,
+    createdAt: r.created_at,
+  }));
 }
 
 export function useFocus(): FocusContextValue {

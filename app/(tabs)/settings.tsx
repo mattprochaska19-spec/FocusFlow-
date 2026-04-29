@@ -43,6 +43,7 @@ export default function SettingsScreen() {
     removeCreatorAllowance,
     setAllowFinishCurrentVideo,
     setAllowOverride,
+    setMinutesPerAssignment,
     effectiveDailyLimitMinutes,
   } = useFocus();
 
@@ -83,6 +84,11 @@ export default function SettingsScreen() {
               allowOverride={state.allowOverride}
               onSetAllowFinishCurrentVideo={setAllowFinishCurrentVideo}
               onSetAllowOverride={setAllowOverride}
+            />
+
+            <EarnTimeSection
+              minutes={state.minutesPerAssignment}
+              onSet={setMinutesPerAssignment}
             />
 
             {state.allowOverride && (
@@ -227,7 +233,7 @@ type LinkedChild = {
 };
 
 function ChildrenList() {
-  const { state, effectiveDailyLimitMinutes } = useFocus();
+  const { state, effectiveDailyLimitMinutes, assignments } = useFocus();
   const [children, setChildren] = useState<LinkedChild[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -293,27 +299,96 @@ function ChildrenList() {
             const eduMins = Math.floor(c.educational_seconds / 60);
             const limit = effectiveDailyLimitMinutes;
             const overLimit = state.focusModeEnabled && entMins >= limit;
+            const childPending = assignments.filter(
+              (a) => a.studentUserId === c.user_id && a.status === 'pending_review'
+            );
             return (
-              <View key={c.user_id} style={styles.childRow}>
-                <View style={styles.childAvatar}>
-                  <Text style={styles.childAvatarText}>{c.email.charAt(0).toUpperCase()}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.childEmail} numberOfLines={1}>{c.email}</Text>
-                  <View style={styles.childStatsRow}>
-                    <Text style={[styles.childStat, overLimit && { color: colors.danger }]}>
-                      {entMins}m / {limit}m entertainment
-                    </Text>
-                    <Text style={styles.childStatDivider}>·</Text>
-                    <Text style={[styles.childStat, { color: colors.accent }]}>{eduMins}m edu</Text>
+              <View key={c.user_id} style={{ gap: 8 }}>
+                <View style={styles.childRow}>
+                  <View style={styles.childAvatar}>
+                    <Text style={styles.childAvatarText}>{c.email.charAt(0).toUpperCase()}</Text>
                   </View>
-                  <Text style={styles.childStatSecondary}>{c.video_count} videos today</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.childEmail} numberOfLines={1}>{c.email}</Text>
+                    <View style={styles.childStatsRow}>
+                      <Text style={[styles.childStat, overLimit && { color: colors.danger }]}>
+                        {entMins}m / {limit}m entertainment
+                      </Text>
+                      <Text style={styles.childStatDivider}>·</Text>
+                      <Text style={[styles.childStat, { color: colors.accent }]}>{eduMins}m edu</Text>
+                    </View>
+                    <Text style={styles.childStatSecondary}>{c.video_count} videos today</Text>
+                  </View>
                 </View>
+
+                {childPending.length > 0 && (
+                  <View style={styles.pendingWrap}>
+                    <Text style={styles.pendingHeader}>
+                      {childPending.length} pending review
+                    </Text>
+                    {childPending.map((a) => (
+                      <PendingAssignmentRow key={a.id} assignmentId={a.id} title={a.title} minutes={a.minutesEarned} />
+                    ))}
+                  </View>
+                )}
               </View>
             );
           })}
         </View>
       )}
+    </View>
+  );
+}
+
+function PendingAssignmentRow({
+  assignmentId,
+  title,
+  minutes,
+}: {
+  assignmentId: string;
+  title: string;
+  minutes: number;
+}) {
+  const [busy, setBusy] = useState<'approve' | 'reject' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const approve = async () => {
+    setBusy('approve');
+    const { error } = await supabase.rpc('approve_assignment', { p_id: assignmentId });
+    setBusy(null);
+    if (error) setError(error.message);
+  };
+
+  const reject = async () => {
+    setBusy('reject');
+    const { error } = await supabase.rpc('reject_assignment', { p_id: assignmentId });
+    setBusy(null);
+    if (error) setError(error.message);
+  };
+
+  return (
+    <View style={styles.pendingRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.pendingTitle} numberOfLines={2}>{title}</Text>
+        <Text style={styles.pendingMeta}>+{minutes}m if approved</Text>
+        {error && <Text style={styles.errorText}>{error}</Text>}
+      </View>
+      <Pressable
+        onPress={reject}
+        disabled={!!busy}
+        style={({ pressed }) => [styles.pendingBtn, styles.pendingReject, pressed && { opacity: 0.85 }]}>
+        {busy === 'reject'
+          ? <ActivityIndicator size="small" color={colors.danger} />
+          : <Ionicons name="close" size={16} color={colors.danger} />}
+      </Pressable>
+      <Pressable
+        onPress={approve}
+        disabled={!!busy}
+        style={({ pressed }) => [styles.pendingBtn, styles.pendingApprove, pressed && { opacity: 0.85 }]}>
+        {busy === 'approve'
+          ? <ActivityIndicator size="small" color={colors.textInverse} />
+          : <Ionicons name="checkmark" size={16} color={colors.textInverse} />}
+      </Pressable>
     </View>
   );
 }
@@ -438,6 +513,41 @@ function DailyLimitSection({
       <Text style={styles.hint}>
         Cap on YouTube entertainment per day. Today's effective cap with overrides:{' '}
         <Text style={styles.hintStrong}>{effective}m</Text>.
+      </Text>
+    </Card>
+  );
+}
+
+function EarnTimeSection({
+  minutes,
+  onSet,
+}: {
+  minutes: number;
+  onSet: (m: number) => void;
+}) {
+  const presets = [5, 10, 15, 30, 45, 60];
+  return (
+    <Card icon="ribbon-outline" title="Earn Time per Assignment">
+      <View style={styles.presetRow}>
+        {presets.map((m) => {
+          const active = m === minutes;
+          return (
+            <Pressable
+              key={m}
+              onPress={() => onSet(m)}
+              style={({ pressed }) => [
+                styles.presetBtn,
+                active && styles.presetBtnActive,
+                pressed && { opacity: 0.9 },
+              ]}>
+              <Text style={[styles.presetBtnText, active && styles.presetBtnTextActive]}>{m}m</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Text style={styles.hint}>
+        When a child marks an assignment done and you approve it, they earn this many minutes of
+        entertainment time on top of their daily limit.
       </Text>
     </Card>
   );
@@ -1126,6 +1236,45 @@ const styles = StyleSheet.create({
   childStat: { color: colors.textSecondary, fontSize: 12, fontWeight: '600' },
   childStatDivider: { color: colors.textMuted, fontSize: 12 },
   childStatSecondary: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
+
+  pendingWrap: {
+    backgroundColor: colors.accentSoft,
+    borderWidth: 1,
+    borderColor: colors.accentBorder,
+    borderRadius: radius.md,
+    padding: 10,
+    gap: 8,
+  },
+  pendingHeader: {
+    color: colors.accent,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 2,
+  },
+  pendingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radius.md,
+  },
+  pendingTitle: { color: colors.textPrimary, fontSize: 13, fontWeight: '600' },
+  pendingMeta: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
+  pendingBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pendingReject: { backgroundColor: colors.dangerSoft, borderWidth: 1, borderColor: colors.dangerBorder },
+  pendingApprove: { backgroundColor: colors.accent },
 
   linkCodeInput: {
     fontSize: 18,
