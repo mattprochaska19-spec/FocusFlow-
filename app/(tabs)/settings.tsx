@@ -44,6 +44,10 @@ export default function SettingsScreen() {
     setAllowFinishCurrentVideo,
     setAllowOverride,
     setMinutesPerAssignment,
+    setLockUntilAssignmentsComplete,
+    setAssignmentLockThreshold,
+    setBulkBonusMinutes,
+    setBulkBonusThreshold,
     effectiveDailyLimitMinutes,
   } = useFocus();
 
@@ -89,6 +93,20 @@ export default function SettingsScreen() {
             <EarnTimeSection
               minutes={state.minutesPerAssignment}
               onSet={setMinutesPerAssignment}
+            />
+
+            <AssignmentLockSection
+              enabled={state.lockUntilAssignmentsComplete}
+              threshold={state.assignmentLockThreshold}
+              onSetEnabled={setLockUntilAssignmentsComplete}
+              onSetThreshold={setAssignmentLockThreshold}
+            />
+
+            <BulkBonusSection
+              bonusMinutes={state.bulkBonusMinutes}
+              threshold={state.bulkBonusThreshold}
+              onSetBonus={setBulkBonusMinutes}
+              onSetThreshold={setBulkBonusThreshold}
             />
 
             {state.allowOverride && (
@@ -525,30 +543,154 @@ function EarnTimeSection({
   minutes: number;
   onSet: (m: number) => void;
 }) {
-  const presets = [5, 10, 15, 30, 45, 60];
+  const [live, setLive] = useState(minutes);
+  useEffect(() => { setLive(minutes); }, [minutes]);
   return (
     <Card icon="ribbon-outline" title="Earn Time per Assignment">
-      <View style={styles.presetRow}>
-        {presets.map((m) => {
-          const active = m === minutes;
-          return (
-            <Pressable
-              key={m}
-              onPress={() => onSet(m)}
-              style={({ pressed }) => [
-                styles.presetBtn,
-                active && styles.presetBtnActive,
-                pressed && { opacity: 0.9 },
-              ]}>
-              <Text style={[styles.presetBtnText, active && styles.presetBtnTextActive]}>{m}m</Text>
-            </Pressable>
-          );
-        })}
+      <View style={styles.sliderValueRow}>
+        <Text style={styles.sliderValue}>{live}</Text>
+        <Text style={styles.sliderValueUnit}>min / approved assignment</Text>
+      </View>
+      <Slider
+        value={minutes}
+        minimumValue={1}
+        maximumValue={120}
+        step={1}
+        minimumTrackTintColor={colors.accent}
+        maximumTrackTintColor={colors.borderSubtle}
+        thumbTintColor={colors.accent}
+        onValueChange={(v) => setLive(Math.round(v))}
+        onSlidingComplete={(v) => onSet(Math.round(v))}
+        style={styles.slider}
+      />
+      <View style={styles.sliderRange}>
+        <Text style={styles.sliderRangeText}>1m</Text>
+        <Text style={styles.sliderRangeText}>120m</Text>
       </View>
       <Text style={styles.hint}>
         When a child marks an assignment done and you approve it, they earn this many minutes of
         entertainment time on top of their daily limit.
       </Text>
+    </Card>
+  );
+}
+
+function BulkBonusSection({
+  bonusMinutes,
+  threshold,
+  onSetBonus,
+  onSetThreshold,
+}: {
+  bonusMinutes: number;
+  threshold: number;
+  onSetBonus: (m: number) => void;
+  onSetThreshold: (n: number) => void;
+}) {
+  const [liveBonus, setLiveBonus] = useState(bonusMinutes);
+  const [liveThreshold, setLiveThreshold] = useState(threshold);
+  useEffect(() => { setLiveBonus(bonusMinutes); }, [bonusMinutes]);
+  useEffect(() => { setLiveThreshold(threshold); }, [threshold]);
+  return (
+    <Card icon="trophy-outline" title="Bulk Completion Bonus">
+      <Text style={styles.hint}>
+        One-time extra time when the child finishes a target number of assignments today, on top of
+        the per-assignment minutes.
+      </Text>
+
+      <Text style={[styles.label, { marginTop: 14 }]}>Bonus minutes</Text>
+      <View style={styles.sliderValueRow}>
+        <Text style={styles.sliderValue}>{liveBonus}</Text>
+        <Text style={styles.sliderValueUnit}>min</Text>
+      </View>
+      <Slider
+        value={bonusMinutes}
+        minimumValue={0}
+        maximumValue={240}
+        step={1}
+        minimumTrackTintColor={colors.accent}
+        maximumTrackTintColor={colors.borderSubtle}
+        thumbTintColor={colors.accent}
+        onValueChange={(v) => setLiveBonus(Math.round(v))}
+        onSlidingComplete={(v) => onSetBonus(Math.round(v))}
+        style={styles.slider}
+      />
+      <View style={styles.sliderRange}>
+        <Text style={styles.sliderRangeText}>off (0m)</Text>
+        <Text style={styles.sliderRangeText}>240m</Text>
+      </View>
+
+      <Text style={[styles.label, { marginTop: 18 }]}>Trigger after</Text>
+      <View style={styles.sliderValueRow}>
+        <Text style={styles.sliderValue}>{liveThreshold}</Text>
+        <Text style={styles.sliderValueUnit}>{liveThreshold === 1 ? 'assignment' : 'assignments'}</Text>
+      </View>
+      <Slider
+        value={threshold}
+        minimumValue={1}
+        maximumValue={10}
+        step={1}
+        minimumTrackTintColor={colors.accent}
+        maximumTrackTintColor={colors.borderSubtle}
+        thumbTintColor={colors.accent}
+        onValueChange={(v) => setLiveThreshold(Math.round(v))}
+        onSlidingComplete={(v) => onSetThreshold(Math.round(v))}
+        style={styles.slider}
+      />
+      <View style={styles.sliderRange}>
+        <Text style={styles.sliderRangeText}>1</Text>
+        <Text style={styles.sliderRangeText}>10</Text>
+      </View>
+    </Card>
+  );
+}
+
+function AssignmentLockSection({
+  enabled,
+  threshold,
+  onSetEnabled,
+  onSetThreshold,
+}: {
+  enabled: boolean;
+  threshold: number;
+  onSetEnabled: (v: boolean) => void;
+  onSetThreshold: (n: number) => void;
+}) {
+  const [live, setLive] = useState(threshold);
+  useEffect(() => { setLive(threshold); }, [threshold]);
+  return (
+    <Card icon="lock-closed-outline" title="Lock Until Assignments Complete">
+      <ToggleRow
+        label="Block entertainment until done"
+        description="Educational content stays unlocked. Entertainment YouTube and limited apps stay blocked until the threshold below is met."
+        value={enabled}
+        onValueChange={onSetEnabled}
+      />
+      {enabled && (
+        <>
+          <View style={styles.toggleDivider} />
+          <Text style={styles.label}>Approved assignments required</Text>
+          <View style={styles.sliderValueRow}>
+            <Text style={styles.sliderValue}>{live}</Text>
+            <Text style={styles.sliderValueUnit}>{live === 1 ? 'assignment' : 'assignments'}</Text>
+          </View>
+          <Slider
+            value={threshold}
+            minimumValue={1}
+            maximumValue={10}
+            step={1}
+            minimumTrackTintColor={colors.accent}
+            maximumTrackTintColor={colors.borderSubtle}
+            thumbTintColor={colors.accent}
+            onValueChange={(v) => setLive(Math.round(v))}
+            onSlidingComplete={(v) => onSetThreshold(Math.round(v))}
+            style={styles.slider}
+          />
+          <View style={styles.sliderRange}>
+            <Text style={styles.sliderRangeText}>1</Text>
+            <Text style={styles.sliderRangeText}>10</Text>
+          </View>
+        </>
+      )}
     </Card>
   );
 }
@@ -887,7 +1029,7 @@ function ChannelLimitsSection({
 }
 
 function TestAccessSection() {
-  const { state } = useFocus();
+  const { state, completedAssignmentsToday } = useFocus();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [decision, setDecision] = useState<AccessDecision | null>(null);
@@ -902,7 +1044,7 @@ function TestAccessSection() {
       return;
     }
     setLoading(true);
-    const d = await decideAccess(id, state);
+    const d = await decideAccess(id, state, completedAssignmentsToday);
     setLoading(false);
     setDecision(d);
   };
@@ -1070,6 +1212,14 @@ const styles = StyleSheet.create({
 
   hint: { fontSize: 11, color: colors.textMuted, marginTop: 12, lineHeight: 16 },
   hintStrong: { color: colors.textSecondary, fontWeight: '600' },
+  label: {
+    color: colors.textMuted,
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
   empty: { color: colors.textMuted, fontSize: 12, marginVertical: 4 },
 
   presetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },

@@ -159,7 +159,7 @@ function AppRow({
 }
 
 function FilterTester() {
-  const { state, recordWatch, addOverride } = useFocus();
+  const { state, recordWatch, addOverride, completedAssignmentsToday } = useFocus();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<FilterResult | null>(null);
@@ -193,7 +193,7 @@ function FilterTester() {
     if (!result || !result.ok) return;
     const { video, classification } = result;
 
-    const decision = await decideAccess(video.id, state);
+    const decision = await decideAccess(video.id, state, completedAssignmentsToday);
     if (!decision.allowed) {
       setBlocked(decision);
       return;

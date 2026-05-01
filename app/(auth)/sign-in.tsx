@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useState } from 'react';
+import * as Google from 'expo-auth-session/providers/google';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -21,7 +22,21 @@ type Mode = 'signin' | 'signup';
 
 export default function SignInScreen() {
   const insets = useSafeAreaInsets();
-  const { signIn, signUp, signInWithGoogle } = useAuth();
+  const { signIn, signUp, signInWithGoogleIdToken } = useAuth();
+
+  // Native Google sign-in via the iOS OAuth client — no redirect URL involved.
+  // Calendar.readonly scope is requested upfront so the access token is later
+  // usable for Google Calendar API calls without a second consent prompt.
+  const [googleRequest, googleResponse, promptGoogle] = Google.useAuthRequest({
+    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+    scopes: ['email', 'profile', 'openid', 'https://www.googleapis.com/auth/calendar.readonly'],
+  });
+
+  // Latest role/code at the moment Google returns — refs survive across the
+  // async OAuth round trip without becoming stale closures.
+  const roleRef = useRef<SignUpRole>('parent');
+  const familyCodeRef = useRef('');
+  const modeRef = useRef<'signin' | 'signup'>('signin');
 
   const [mode, setMode] = useState<Mode>('signin');
   const [role, setRole] = useState<SignUpRole>('parent');
@@ -66,23 +81,54 @@ export default function SignInScreen() {
   };
 
   const continueWithGoogle = async () => {
-    if (googleSubmitting) return;
+    if (googleSubmitting || !googleRequest) return;
     setError(null);
     setInfo(null);
+    // Snapshot form state so it survives the async OAuth round trip
+    roleRef.current = role;
+    familyCodeRef.current = familyCode.trim();
+    modeRef.current = mode;
     setGoogleSubmitting(true);
-    const result = await signInWithGoogle({
-      role: mode === 'signup' ? role : undefined,
-      familyCode: mode === 'signup' && role === 'student' ? familyCode.trim() : undefined,
-    });
-    setGoogleSubmitting(false);
-    if (result.error) {
-      setError(result.error);
+    await promptGoogle();
+    // The actual sign-in completes in the useEffect below when googleResponse fires
+  };
+
+  // When Google returns with an id_token, exchange it for a Supabase session
+  useEffect(() => {
+    if (!googleResponse) return;
+    if (googleResponse.type !== 'success') {
+      setGoogleSubmitting(false);
+      if (googleResponse.type === 'error') {
+        setError(googleResponse.error?.message ?? 'Google sign-in failed');
+      }
       return;
     }
-    if (result.needsRoleSetup) {
-      setInfo("Signed in with Google. Switch to 'Create one' below and pick Parent or Student to finish setup.");
+    const idToken = googleResponse.authentication?.idToken;
+    if (!idToken) {
+      setGoogleSubmitting(false);
+      setError('Google did not return an ID token');
+      return;
     }
-  };
+    (async () => {
+      const result = await signInWithGoogleIdToken(idToken, {
+        role: modeRef.current === 'signup' ? roleRef.current : undefined,
+        familyCode:
+          modeRef.current === 'signup' && roleRef.current === 'student'
+            ? familyCodeRef.current
+            : undefined,
+      });
+      setGoogleSubmitting(false);
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+      if (result.needsRoleSetup) {
+        setInfo(
+          "Signed in with Google. Switch to 'Create one' below and pick Parent or Student to finish setup.",
+        );
+      }
+    })();
+  }, [googleResponse, signInWithGoogleIdToken]);
 
   return (
     <KeyboardAvoidingView
@@ -208,10 +254,10 @@ export default function SignInScreen() {
 
           <Pressable
             onPress={continueWithGoogle}
-            disabled={googleSubmitting}
+            disabled={googleSubmitting || !googleRequest}
             style={({ pressed }) => [
               styles.googleBtn,
-              googleSubmitting && { opacity: 0.7 },
+              (googleSubmitting || !googleRequest) && { opacity: 0.7 },
               pressed && { opacity: 0.85 },
             ]}>
             {googleSubmitting

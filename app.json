@@ -10,7 +10,17 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.mattprochaska.focusflow"
+      "bundleIdentifier": "com.mattprochaska.focusflow",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "com.googleusercontent.apps.596796536524-p0cfgi99rfljc3uv3917h4tob7e50hmr"
+            ]
+          }
+        ]
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -52,6 +62,12 @@
         "projectId": "7c5037c6-bf28-4475-8e38-1fe18ae9db15"
       }
     },
-    "owner": "mattprochaska"
+    "owner": "mattprochaska",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/7c5037c6-bf28-4475-8e38-1fe18ae9db15"
+    }
   }
 }

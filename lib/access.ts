@@ -12,7 +12,8 @@ export type AccessReason =
   | 'within_limits'
   | 'daily_limit'
   | 'channel_limit'
-  | 'creator_count_limit';
+  | 'creator_count_limit'
+  | 'assignments_required';
 
 export type AccessDetails = {
   dailyLimitMinutes?: number;
@@ -23,6 +24,8 @@ export type AccessDetails = {
   creatorAllowanceVideos?: number;
   creatorVideosUsed?: number;
   creatorName?: string;
+  assignmentsRequired?: number;
+  assignmentsCompleted?: number;
 };
 
 export type AccessDecision = {
@@ -34,7 +37,11 @@ export type AccessDecision = {
   error?: string;
 };
 
-export async function decideAccess(videoId: string, state: FocusState): Promise<AccessDecision> {
+export async function decideAccess(
+  videoId: string,
+  state: FocusState,
+  completedAssignmentsToday: number = 0
+): Promise<AccessDecision> {
   if (!state.focusModeEnabled) {
     return { allowed: true, reason: 'focus_off' };
   }
@@ -56,6 +63,24 @@ export async function decideAccess(videoId: string, state: FocusState): Promise<
 
   if (classification.isEducational) {
     return { allowed: true, reason: 'educational', classification, video };
+  }
+
+  // Lock entertainment behind assignment completion if the parent enabled it.
+  // Educational content stays allowed (above); only entertainment is gated.
+  if (
+    state.lockUntilAssignmentsComplete &&
+    completedAssignmentsToday < state.assignmentLockThreshold
+  ) {
+    return {
+      allowed: false,
+      reason: 'assignments_required',
+      classification,
+      video,
+      details: {
+        assignmentsRequired: state.assignmentLockThreshold,
+        assignmentsCompleted: completedAssignmentsToday,
+      },
+    };
   }
 
   // Creator allowance — match by channelId (set when added via channel search)
@@ -165,6 +190,15 @@ export function describeDecision(d: AccessDecision): { headline: string; detail:
       return {
         headline: 'Blocked',
         detail: `Channel cap hit for ${d.details?.channelLabel} (${used}m of ${limit}m).`,
+      };
+    }
+    case 'assignments_required': {
+      const done = d.details?.assignmentsCompleted ?? 0;
+      const need = d.details?.assignmentsRequired ?? 0;
+      const remaining = Math.max(0, need - done);
+      return {
+        headline: 'Finish your work first',
+        detail: `Complete ${remaining} more ${remaining === 1 ? 'assignment' : 'assignments'} (${done} of ${need} done) to unlock entertainment.`,
       };
     }
   }

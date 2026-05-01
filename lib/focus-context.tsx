@@ -80,6 +80,10 @@ export type FocusState = {
   allowFinishCurrentVideo: boolean;
   allowOverride: boolean;
   minutesPerAssignment: number;
+  lockUntilAssignmentsComplete: boolean;
+  assignmentLockThreshold: number;
+  bulkBonusMinutes: number;
+  bulkBonusThreshold: number;
 };
 
 const DEFAULT_LIMITED_APPS: LimitedApp[] = [
@@ -129,6 +133,10 @@ const DEFAULT_STATE: FocusState = {
   allowFinishCurrentVideo: true,
   allowOverride: true,
   minutesPerAssignment: 15,
+  lockUntilAssignmentsComplete: false,
+  assignmentLockThreshold: 1,
+  bulkBonusMinutes: 0,
+  bulkBonusThreshold: 3,
 };
 
 const STORAGE_KEY = 'focusflow_state_v1';
@@ -164,6 +172,11 @@ type FocusContextValue = {
   addOverride: (minutes: number) => void;
   setAllowFinishCurrentVideo: (allow: boolean) => void;
   setAllowOverride: (allow: boolean) => void;
+  setLockUntilAssignmentsComplete: (v: boolean) => void;
+  setAssignmentLockThreshold: (n: number) => void;
+  setBulkBonusMinutes: (m: number) => void;
+  setBulkBonusThreshold: (n: number) => void;
+  completedAssignmentsToday: number;
   effectiveDailyLimitMinutes: number;
   resetToday: () => void;
   reloadProfile: () => void;
@@ -579,22 +592,41 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     setReloadKey((k) => k + 1);
   }, []);
 
-  // Sum minutes earned by completing assignments today. Only the student's own
-  // approved-today assignments count toward their personal earned bonus.
+  // Today's approved assignments, used to compute earned minutes and the
+  // assignment-lock gate. Students see their own; parents see their children's.
+  const completedAssignmentsToday = useMemo(() => {
+    if (!session) return 0;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return assignments.filter(
+      (a) =>
+        a.studentUserId === session.user.id &&
+        a.status === 'completed' &&
+        a.completedAt &&
+        new Date(a.completedAt) >= start
+    ).length;
+  }, [assignments, session?.user.id]);
+
+  // Sum minutes earned by completing assignments today, plus the one-time
+  // bulk bonus when the threshold is hit.
   const earnedMinutesToday = useMemo(() => {
     if (!session) return 0;
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    return assignments
-      .filter(
-        (a) =>
-          a.studentUserId === session.user.id &&
-          a.status === 'completed' &&
-          a.completedAt &&
-          new Date(a.completedAt) >= start
-      )
-      .reduce((sum, a) => sum + a.minutesEarned, 0);
-  }, [assignments, session?.user.id]);
+    const todayApproved = assignments.filter(
+      (a) =>
+        a.studentUserId === session.user.id &&
+        a.status === 'completed' &&
+        a.completedAt &&
+        new Date(a.completedAt) >= start
+    );
+    const perAssignment = todayApproved.reduce((sum, a) => sum + a.minutesEarned, 0);
+    const bulk =
+      state.bulkBonusMinutes > 0 && todayApproved.length >= state.bulkBonusThreshold
+        ? state.bulkBonusMinutes
+        : 0;
+    return perAssignment + bulk;
+  }, [assignments, session?.user.id, state.bulkBonusMinutes, state.bulkBonusThreshold]);
 
   const effectiveDailyLimitMinutes = useMemo(() => {
     const overrideMinutes =
@@ -606,6 +638,22 @@ export function FocusProvider({ children }: { children: ReactNode }) {
 
   const setMinutesPerAssignment = useCallback((minutes: number) => {
     setState((s) => ({ ...s, minutesPerAssignment: Math.max(1, minutes) }));
+  }, []);
+
+  const setLockUntilAssignmentsComplete = useCallback((v: boolean) => {
+    setState((s) => ({ ...s, lockUntilAssignmentsComplete: v }));
+  }, []);
+
+  const setAssignmentLockThreshold = useCallback((n: number) => {
+    setState((s) => ({ ...s, assignmentLockThreshold: Math.max(1, Math.round(n)) }));
+  }, []);
+
+  const setBulkBonusMinutes = useCallback((m: number) => {
+    setState((s) => ({ ...s, bulkBonusMinutes: Math.max(0, Math.round(m)) }));
+  }, []);
+
+  const setBulkBonusThreshold = useCallback((n: number) => {
+    setState((s) => ({ ...s, bulkBonusThreshold: Math.max(1, Math.round(n)) }));
   }, []);
 
   const value: FocusContextValue = {
@@ -628,6 +676,11 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     setAllowFinishCurrentVideo,
     setAllowOverride,
     setMinutesPerAssignment,
+    setLockUntilAssignmentsComplete,
+    setAssignmentLockThreshold,
+    setBulkBonusMinutes,
+    setBulkBonusThreshold,
+    completedAssignmentsToday,
     assignments,
     earnedMinutesToday,
     effectiveDailyLimitMinutes,

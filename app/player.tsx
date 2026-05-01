@@ -22,7 +22,7 @@ const HEARTBEAT_SECONDS = 30;
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const { videoId } = useLocalSearchParams<{ videoId: string }>();
-  const { state, recordWatch, addOverride } = useFocus();
+  const { state, recordWatch, addOverride, completedAssignmentsToday } = useFocus();
 
   const [decision, setDecision] = useState<AccessDecision | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,7 +40,7 @@ export default function PlayerScreen() {
     if (!videoId) return;
     let cancelled = false;
     setLoading(true);
-    decideAccess(videoId, stateRef.current).then((d) => {
+    decideAccess(videoId, stateRef.current, completedAssignmentsToday).then((d) => {
       if (cancelled) return;
       setDecision(d);
       setLoading(false);
@@ -51,7 +51,7 @@ export default function PlayerScreen() {
       }
     });
     return () => { cancelled = true; };
-  }, [videoId]);
+  }, [videoId, completedAssignmentsToday]);
 
   // 30-second heartbeat: record watch time and re-check access mid-video.
   // If a limit is hit and "Finish current video" is OFF, pause and show the block screen.
@@ -70,7 +70,7 @@ export default function PlayerScreen() {
         channelTitle: video.channelTitle,
         categoryId: video.categoryId,
       });
-      const next = await decideAccess(video.id, stateRef.current);
+      const next = await decideAccess(video.id, stateRef.current, completedAssignmentsToday);
       if (!next.allowed && !stateRef.current.allowFinishCurrentVideo) {
         setPlaying(false);
         setBlocked(next);
