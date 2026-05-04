@@ -3,25 +3,40 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useAuth } from '@/lib/auth-context';
-import { useFocus, type Assignment } from '@/lib/focus-context';
-import { fetchUpcomingEvents, type CalendarEvent } from '@/lib/google-calendar';
+import { fetchClassroomAssignments } from '@/lib/classroom';
+import { FOCUS_BONUS_MULTIPLIER, useFocus, type Assignment } from '@/lib/focus-context';
+import { fetchUpcomingEvents } from '@/lib/google-calendar';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, shadowSm } from '@/lib/theme';
+import { syncMyUpcomingWork, type UpcomingWorkItem } from '@/lib/upcoming-work';
+
+// Unified shape rendered in this section. Calendar events and Classroom
+// coursework both map into this — id is opaque and round-trips into the
+// submit_assignment RPC as p_google_event_id (Classroom uses gc:* prefix).
+type DisplayItem = {
+  id: string;
+  title: string;
+  dueAt: string | null;
+  isAllDay: boolean;
+  source: 'calendar' | 'classroom';
+  courseTitle?: string;
+};
 
 // Student-only section: fetches upcoming Google Calendar events and lets the
 // student claim "I'm done" on each. A claim creates a pending_review assignment
 // that the parent then approves to unlock earned minutes.
 export function AssignmentsSection() {
-  const { session } = useAuth();
-  const { profile, assignments, earnedMinutesToday, state } = useFocus();
-  const [events, setEvents] = useState<CalendarEvent[] | null>(null);
+  const { session, googleAccessToken } = useAuth();
+  const { profile, assignments, earnedMinutesToday, state, activeFocusSession } = useFocus();
+  const [items, setItems] = useState<DisplayItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<string | null>(null);
 
-  const accessToken = session?.provider_token ?? null;
+  const accessToken = googleAccessToken;
 
-  // Index existing assignment claims by Google event id for quick lookup
+  // Index existing assignment claims by id for quick lookup. The googleEventId
+  // column stores either a Calendar event id or a 'gc:*' Classroom prefix.
   const claimsByEvent = new Map<string, Assignment>();
   for (const a of assignments) {
     if (a.studentUserId === session?.user.id) claimsByEvent.set(a.googleEventId, a);
@@ -31,13 +46,70 @@ export function AssignmentsSection() {
     if (!accessToken) return;
     setLoading(true);
     setError(null);
-    try {
-      const ev = await fetchUpcomingEvents(accessToken, { daysAhead: 14, maxResults: 30 });
-      setEvents(ev);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load calendar');
-    } finally {
-      setLoading(false);
+    // Fetch both sources in parallel; either failing alone shouldn't blank
+    // the other. Aggregate the first error, if any, into the surfaced message.
+    const [calRes, classRes] = await Promise.allSettled([
+      fetchUpcomingEvents(accessToken, { daysAhead: 14, maxResults: 30 }),
+      fetchClassroomAssignments(accessToken, { daysAhead: 14 }),
+    ]);
+
+    const out: DisplayItem[] = [];
+    if (calRes.status === 'fulfilled') {
+      for (const ev of calRes.value) {
+        out.push({
+          id: ev.id,
+          title: ev.summary,
+          dueAt: ev.end ?? null,
+          isAllDay: ev.isAllDay,
+          source: 'calendar',
+        });
+      }
+    }
+    if (classRes.status === 'fulfilled') {
+      for (const cw of classRes.value) {
+        out.push({
+          id: cw.id,
+          title: cw.title,
+          dueAt: cw.dueAt,
+          isAllDay: cw.isAllDay,
+          source: 'classroom',
+          courseTitle: cw.courseTitle,
+        });
+      }
+    }
+    out.sort((a, b) => {
+      if (a.dueAt && b.dueAt) return a.dueAt.localeCompare(b.dueAt);
+      if (a.dueAt) return -1;
+      if (b.dueAt) return 1;
+      return a.title.localeCompare(b.title);
+    });
+    setItems(out);
+
+    const firstErr = [calRes, classRes].find((r) => r.status === 'rejected') as
+      | PromiseRejectedResult
+      | undefined;
+    if (firstErr) {
+      const msg = firstErr.reason instanceof Error ? firstErr.reason.message : 'Failed to load assignments';
+      setError(msg);
+    }
+    setLoading(false);
+
+    // Layer 2: push the merged snapshot to Supabase so the linked parent's
+    // Family tab can see what this child has to do. Only sync when at least
+    // one source succeeded — a double-failure round shouldn't wipe the last
+    // good sync. Fire-and-forget; sync errors don't surface to the kid.
+    if (calRes.status === 'fulfilled' || classRes.status === 'fulfilled') {
+      const syncItems: UpcomingWorkItem[] = out.map((item) => ({
+        source: item.source,
+        externalId: item.id,
+        title: item.title,
+        dueAt: item.dueAt,
+        courseTitle: item.courseTitle,
+        isAllDay: item.isAllDay,
+      }));
+      syncMyUpcomingWork(syncItems).then((res) => {
+        if (res.error) console.warn('[FocusFlow] upcoming-work sync failed:', res.error);
+      });
     }
   };
 
@@ -46,13 +118,16 @@ export function AssignmentsSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
 
-  const submit = async (ev: CalendarEvent) => {
-    setSubmitting(ev.id);
+  const submit = async (item: DisplayItem) => {
+    setSubmitting(item.id);
+    const minutes = activeFocusSession
+      ? Math.round(state.minutesPerAssignment * FOCUS_BONUS_MULTIPLIER)
+      : state.minutesPerAssignment;
     const { error: rpcErr } = await supabase.rpc('submit_assignment', {
-      p_google_event_id: ev.id,
-      p_title: ev.summary,
-      p_due_at: ev.end ?? null,
-      p_minutes: state.minutesPerAssignment,
+      p_google_event_id: item.id,
+      p_title: item.title,
+      p_due_at: item.dueAt,
+      p_minutes: minutes,
     });
     setSubmitting(null);
     if (rpcErr) setError(rpcErr.message);
@@ -67,8 +142,8 @@ export function AssignmentsSection() {
         <Text style={styles.sectionLabel}>Assignments</Text>
         <View style={styles.card}>
           <Text style={styles.empty}>
-            Sign out and sign back in with Google to connect your calendar — you'll be able to mark
-            assignments done here to earn screen time.
+            Sign out and sign back in with Google to connect Calendar and Classroom — you'll be
+            able to mark assignments done here to earn screen time.
           </Text>
         </View>
       </>
@@ -97,21 +172,21 @@ export function AssignmentsSection() {
 
         {error && <Text style={styles.errorText}>{error}</Text>}
 
-        {events && events.length === 0 && (
-          <Text style={styles.empty}>No upcoming calendar events in the next two weeks.</Text>
+        {items && items.length === 0 && (
+          <Text style={styles.empty}>No upcoming assignments in the next two weeks.</Text>
         )}
 
-        {events && events.length > 0 && (
+        {items && items.length > 0 && (
           <View style={{ gap: 8, marginTop: 8 }}>
-            {events.map((ev) => {
-              const claim = claimsByEvent.get(ev.id);
+            {items.map((item) => {
+              const claim = claimsByEvent.get(item.id);
               return (
-                <EventRow
-                  key={ev.id}
-                  event={ev}
+                <AssignmentRow
+                  key={item.id}
+                  item={item}
                   claim={claim}
-                  submitting={submitting === ev.id}
-                  onSubmit={() => submit(ev)}
+                  submitting={submitting === item.id}
+                  onSubmit={() => submit(item)}
                 />
               );
             })}
@@ -122,24 +197,32 @@ export function AssignmentsSection() {
   );
 }
 
-function EventRow({
-  event,
+function AssignmentRow({
+  item,
   claim,
   submitting,
   onSubmit,
 }: {
-  event: CalendarEvent;
+  item: DisplayItem;
   claim?: Assignment;
   submitting: boolean;
   onSubmit: () => void;
 }) {
-  const due = formatDue(event.end, event.isAllDay);
+  const due = item.dueAt ? formatDue(item.dueAt, item.isAllDay) : null;
+  const meta = [item.source === 'classroom' ? item.courseTitle : null, due].filter(Boolean).join(' · ');
 
   return (
     <View style={styles.row}>
       <View style={{ flex: 1 }}>
-        <Text style={styles.rowTitle} numberOfLines={2}>{event.summary}</Text>
-        {due && <Text style={styles.rowMeta}>{due}</Text>}
+        <View style={styles.titleRow}>
+          {item.source === 'classroom' && (
+            <View style={styles.sourcePill}>
+              <Text style={styles.sourcePillText}>Classroom</Text>
+            </View>
+          )}
+          <Text style={styles.rowTitle} numberOfLines={2}>{item.title}</Text>
+        </View>
+        {meta.length > 0 && <Text style={styles.rowMeta}>{meta}</Text>}
       </View>
       <RowAction claim={claim} submitting={submitting} onSubmit={onSubmit} />
     </View>
@@ -155,15 +238,21 @@ function RowAction({
   submitting: boolean;
   onSubmit: () => void;
 }) {
+  const { activeFocusSession } = useFocus();
+
   if (!claim) {
     return (
       <Pressable
         onPress={onSubmit}
         disabled={submitting}
-        style={({ pressed }) => [styles.doneBtn, pressed && { opacity: 0.85 }]}>
+        style={({ pressed }) => [
+          styles.doneBtn,
+          activeFocusSession && styles.doneBtnFocusBonus,
+          pressed && { opacity: 0.85 },
+        ]}>
         {submitting
           ? <ActivityIndicator color={colors.textInverse} size="small" />
-          : <Text style={styles.doneBtnText}>I'm done</Text>}
+          : <Text style={styles.doneBtnText}>{activeFocusSession ? "I'm done · 1.5×" : "I'm done"}</Text>}
       </Pressable>
     );
   }
@@ -250,8 +339,25 @@ const styles = StyleSheet.create({
     borderColor: colors.borderSubtle,
     borderRadius: radius.md,
   },
-  rowTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '600', letterSpacing: -0.2 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  rowTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '600', letterSpacing: -0.2, flexShrink: 1 },
   rowMeta: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
+
+  sourcePill: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: colors.accentSoft,
+    borderWidth: 0.5,
+    borderColor: colors.accentBorder,
+  },
+  sourcePillText: {
+    color: colors.accent,
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
 
   doneBtn: {
     backgroundColor: colors.accent,
@@ -259,6 +365,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: radius.pill,
   },
+  doneBtnFocusBonus: { backgroundColor: '#1F4F36' },
   doneBtnRetry: { backgroundColor: colors.textSecondary },
   doneBtnText: { color: colors.textInverse, fontWeight: '700', fontSize: 12, letterSpacing: 0.2 },
 

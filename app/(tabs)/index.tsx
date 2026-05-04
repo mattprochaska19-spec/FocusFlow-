@@ -1,8 +1,11 @@
 import { FontAwesome5, Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,10 +18,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AssignmentsSection } from '@/components/assignments-section';
 import { BlockModal } from '@/components/block-modal';
+import { FocusSessionCard } from '@/components/focus-session-card';
 import { decideAccess, type AccessDecision } from '@/lib/access';
 import { checkVideoCached } from '@/lib/cache';
 import { useFocus, type AppId } from '@/lib/focus-context';
-import { colors, radius, shadow, shadowSm, space } from '@/lib/theme';
+import { colors, fonts, radius, shadowSm, space, tabularNumbers } from '@/lib/theme';
 import { extractVideoId, type FilterResult } from '@/lib/youtube-filter';
 
 const BRAND = {
@@ -36,87 +40,106 @@ export default function HomeScreen() {
   const limitedActiveCount = focusOn ? state.limitedApps.filter((a) => a.enabled).length : 0;
   const eduMins = Math.floor(state.today.educationalSeconds / 60);
   const entMins = Math.floor(state.today.entertainmentSeconds / 60);
-  const entOver = focusOn && entMins >= effectiveDailyLimitMinutes;
+  const limit = effectiveDailyLimitMinutes;
+  const pct = limit > 0 ? Math.min(100, (entMins / limit) * 100) : 0;
+  const remaining = Math.max(0, limit - entMins);
+  const overLimit = focusOn && entMins >= limit;
 
   return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={{ flex: 1, backgroundColor: colors.bg }}>
     <ScrollView
       style={styles.container}
-      contentContainerStyle={[styles.content, { paddingTop: insets.top + space.lg, paddingBottom: 40 }]}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + space.lg, paddingBottom: 48 }]}
       keyboardShouldPersistTaps="handled">
       <View style={styles.header}>
         <View style={styles.logoMark}>
           <Text style={styles.logoChar}>F</Text>
         </View>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.brand}>FocusFlow</Text>
           <Text style={styles.brandSub}>Less scroll. More learn.</Text>
         </View>
+        <View style={[styles.statusDot, focusOn && styles.statusDotOn]} />
       </View>
 
-      <View style={[styles.hero, focusOn && styles.heroOn]}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.heroLabel}>FOCUS MODE</Text>
-          <Text style={styles.heroStatus}>
-            {focusOn ? 'On' : 'Off'}
-          </Text>
-          <Text style={styles.heroSub}>
-            {focusOn
-              ? `${limitedActiveCount} ${limitedActiveCount === 1 ? 'app' : 'apps'} limited today`
-              : 'All apps unrestricted'}
-          </Text>
+      {/* Hero stat: today's entertainment usage */}
+      <View style={styles.hero}>
+        <Text style={styles.heroLabel}>Entertainment Today</Text>
+        <View style={styles.heroNumRow}>
+          <Text style={[styles.heroNum, overLimit && styles.heroNumDanger]}>{entMins}</Text>
+          <Text style={styles.heroNumUnit}>min</Text>
         </View>
-        <Switch
-          value={focusOn}
-          onValueChange={setFocusMode}
-          trackColor={{ false: '#D9D3C7', true: colors.accent }}
-          thumbColor={colors.surface}
-          ios_backgroundColor="#D9D3C7"
-          style={{ transform: [{ scaleX: 1.15 }, { scaleY: 1.15 }] }}
-        />
+        <Text style={styles.heroSub}>
+          {overLimit ? 'Daily limit reached' : `${remaining} left of ${limit} today`}
+        </Text>
+
+        <View style={styles.heroBarTrack}>
+          <View
+            style={[
+              styles.heroBarFill,
+              { width: `${pct}%` },
+              overLimit && styles.heroBarFillDanger,
+            ]}
+          />
+        </View>
+
+        <View style={styles.heroFooter}>
+          <View style={styles.heroFooterStat}>
+            <Text style={styles.heroFooterValue}>{eduMins}m</Text>
+            <Text style={styles.heroFooterLabel}>Educational</Text>
+          </View>
+          <View style={styles.heroFooterDivider} />
+          <View style={styles.heroFooterStat}>
+            <Text style={styles.heroFooterValue}>{state.today.videoCount}</Text>
+            <Text style={styles.heroFooterLabel}>Videos</Text>
+          </View>
+          <View style={styles.heroFooterDivider} />
+          <View style={styles.heroFooterStat}>
+            <View style={styles.toggleRow}>
+              <Switch
+                value={focusOn}
+                onValueChange={(v) => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setFocusMode(v);
+                }}
+                trackColor={{ false: colors.surfaceAlt, true: colors.accent }}
+                thumbColor={colors.textPrimary}
+                ios_backgroundColor={colors.surfaceAlt}
+                style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
+              />
+            </View>
+            <Text style={styles.heroFooterLabel}>Focus {focusOn ? 'on' : 'off'}</Text>
+          </View>
+        </View>
       </View>
 
-      <Text style={styles.sectionLabel}>Currently Limited</Text>
-      <View style={styles.card}>
+      <FocusSessionCard />
+
+      <Text style={styles.sectionLabel}>Limited Apps</Text>
+      <View style={styles.list}>
         {state.limitedApps.map((app, i) => {
           const isLimited = focusOn && app.enabled;
           return (
             <View key={app.id}>
               <AppRow id={app.id} name={app.name} limitMinutes={app.dailyLimitMinutes} isLimited={isLimited} />
-              {i < state.limitedApps.length - 1 && <View style={styles.divider} />}
+              {i < state.limitedApps.length - 1 && <View style={styles.hairline} />}
             </View>
           );
         })}
-      </View>
-
-      <Text style={styles.sectionLabel}>YouTube</Text>
-      <View style={[styles.card, styles.cardAccent]}>
+        <View style={styles.hairline} />
         <View style={styles.row}>
-          <View style={[styles.iconWrap, { backgroundColor: '#FFE5E5' }]}>
-            <FontAwesome5 name="youtube" size={16} color="#FF0000" />
+          <View style={[styles.iconWrap, { backgroundColor: colors.dangerSoft }]}>
+            <FontAwesome5 name="youtube" size={14} color="#FF4D4D" />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.appName}>YouTube</Text>
-            <Text style={styles.eduTagline}>Educational only · Unlimited</Text>
+            <Text style={styles.rowName}>YouTube</Text>
+            <Text style={styles.rowMetaAccent}>Educational only · Unlimited</Text>
           </View>
-          <View style={styles.badgeOn}>
-            <View style={styles.badgeDot} />
-            <Text style={styles.badgeOnText}>Allowed</Text>
-          </View>
-        </View>
-
-        <View style={styles.divider} />
-
-        <View style={styles.statsRow}>
-          <View style={styles.statBlock}>
-            <Text style={[styles.statValue, styles.statValueEdu]}>{eduMins}m</Text>
-            <Text style={styles.statLabel}>Educational</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statBlock}>
-            <Text style={[styles.statValue, entOver && styles.statValueDanger]}>
-              {entMins}<Text style={styles.statValueSuffix}> / {effectiveDailyLimitMinutes}m</Text>
-            </Text>
-            <Text style={styles.statLabel}>Entertainment</Text>
+          <View style={styles.dotPill}>
+            <View style={styles.greenDot} />
+            <Text style={styles.dotPillText}>Allowed</Text>
           </View>
         </View>
       </View>
@@ -125,6 +148,7 @@ export default function HomeScreen() {
 
       <FilterTester />
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -142,24 +166,22 @@ function AppRow({
   const brand = BRAND[id];
   return (
     <View style={styles.row}>
-      <View style={[styles.iconWrap, { backgroundColor: isLimited ? brand.color : colors.neutral }]}>
-        <FontAwesome5 name={brand.icon} size={16} color={isLimited ? '#FFF' : colors.textMuted} />
+      <View style={[styles.iconWrap, { backgroundColor: isLimited ? brand.color : colors.surfaceMuted }]}>
+        <FontAwesome5 name={brand.icon} size={14} color={isLimited ? '#FFF' : colors.textMuted} />
       </View>
       <View style={{ flex: 1 }}>
-        <Text style={[styles.appName, !isLimited && styles.appNameOff]}>{name}</Text>
-        <Text style={styles.appSub}>{isLimited ? `${limitMinutes} min / day` : 'Unrestricted'}</Text>
+        <Text style={[styles.rowName, !isLimited && styles.rowNameOff]}>{name}</Text>
+        <Text style={styles.rowMeta}>{isLimited ? `${limitMinutes} min / day` : 'Unrestricted'}</Text>
       </View>
-      <View style={isLimited ? styles.badgeMuted : styles.badgeOff}>
-        <Text style={isLimited ? styles.badgeMutedText : styles.badgeOffText}>
-          {isLimited ? 'Limited' : 'Off'}
-        </Text>
-      </View>
+      <Text style={[styles.statusText, isLimited ? styles.statusTextLimited : styles.statusTextOff]}>
+        {isLimited ? 'Limited' : 'Off'}
+      </Text>
     </View>
   );
 }
 
 function FilterTester() {
-  const { state, recordWatch, addOverride, completedAssignmentsToday } = useFocus();
+  const { state, recordWatch, addOverride, completedAssignmentsToday, activeFocusSession, scheduleBlocks } = useFocus();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<FilterResult | null>(null);
@@ -167,7 +189,6 @@ function FilterTester() {
   const [recordedSec, setRecordedSec] = useState(0);
   const [blocked, setBlocked] = useState<AccessDecision | null>(null);
 
-  // Reset the watched counter whenever a new test runs
   useEffect(() => { setRecordedSec(0); }, [result]);
 
   const run = async () => {
@@ -175,7 +196,7 @@ function FilterTester() {
     setResult(null);
     const id = extractVideoId(input);
     if (!id) {
-      setParseError('Could not extract a video ID. Paste a YouTube URL or 11-char ID.');
+      setParseError('Paste a YouTube URL or 11-char ID.');
       return;
     }
     setLoading(true);
@@ -192,13 +213,17 @@ function FilterTester() {
   const markWatched = async () => {
     if (!result || !result.ok) return;
     const { video, classification } = result;
-
-    const decision = await decideAccess(video.id, state, completedAssignmentsToday);
+    const decision = await decideAccess(video.id, state, completedAssignmentsToday, {
+      active: !!activeFocusSession,
+      remainingSeconds: activeFocusSession
+        ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
+        : 0,
+      anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
+    }, scheduleBlocks);
     if (!decision.allowed) {
       setBlocked(decision);
       return;
     }
-
     recordWatch({
       seconds: 60,
       isEducational: classification.isEducational,
@@ -215,12 +240,11 @@ function FilterTester() {
   return (
     <>
       <Text style={styles.sectionLabel}>Test Filter</Text>
-      <View style={styles.card}>
-        <Text style={styles.testHint}>Paste a YouTube URL or video ID to see how the filter classifies it.</Text>
+      <View style={styles.testCard}>
         <TextInput
           value={input}
           onChangeText={(v) => { setInput(v); setParseError(null); }}
-          placeholder="https://youtube.com/watch?v=..."
+          placeholder="Paste a YouTube URL"
           placeholderTextColor={colors.textMuted}
           autoCapitalize="none"
           autoCorrect={false}
@@ -236,7 +260,7 @@ function FilterTester() {
             (loading || !input.trim()) && styles.testBtnDisabled,
             pressed && { opacity: 0.9 },
           ]}>
-          {loading ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.testBtnText}>Check Video</Text>}
+          {loading ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.testBtnText}>Check</Text>}
         </Pressable>
 
         {parseError && <Text style={styles.errorText}>{parseError}</Text>}
@@ -247,7 +271,7 @@ function FilterTester() {
             <Pressable
               onPress={() => router.push({ pathname: '/player', params: { videoId: result.video.id } })}
               style={({ pressed }) => [styles.watchBtn, pressed && { opacity: 0.9 }]}>
-              <Ionicons name="play" size={14} color={colors.textInverse} style={{ marginRight: 4 }} />
+              <Ionicons name="play" size={12} color={colors.textInverse} style={{ marginRight: 4 }} />
               <Text style={styles.watchBtnText}>Watch in app</Text>
             </Pressable>
             <Pressable
@@ -314,223 +338,226 @@ function ResultCard({ result }: { result: FilterResult }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  content: { paddingHorizontal: space.xl + space.xs }, // 24
+  content: { paddingHorizontal: 24 },
 
-  header: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: space.xxl },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 36 },
   logoMark: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 9,
     backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
-    ...shadowSm,
   },
-  logoChar: { color: colors.textInverse, fontSize: 20, fontWeight: '800', letterSpacing: -0.5 },
-  brand: { color: colors.textPrimary, fontSize: 19, fontWeight: '700', letterSpacing: -0.4 },
-  brandSub: { color: colors.textMuted, fontSize: 12, marginTop: 1 },
+  logoChar: { color: colors.textInverse, fontSize: 18, fontFamily: fonts.serifBlack, letterSpacing: -0.5 },
+  brand: { color: colors.textPrimary, fontSize: 22, fontFamily: fonts.serifBold, letterSpacing: -0.6 },
+  brandSub: { color: colors.textMuted, fontSize: 12, fontFamily: fonts.medium, marginTop: 2, fontStyle: 'italic' },
+  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.textMuted },
+  statusDotOn: { backgroundColor: colors.accent },
 
+  // Hero stat block — editorial layout, sits directly on the page
   hero: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    padding: 22,
-    paddingVertical: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: space.xxl,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    ...shadow,
-  },
-  heroOn: {
-    backgroundColor: colors.accentSoft,
-    borderColor: colors.accentBorder,
+    marginBottom: 40,
+    paddingTop: 4,
   },
   heroLabel: {
-    fontSize: 10,
-    color: colors.textSecondary,
-    marginBottom: 6,
-    letterSpacing: 1.4,
-    fontWeight: '700',
+    color: colors.textMuted,
+    fontSize: 11,
+    fontFamily: fonts.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 1.6,
+    marginBottom: 14,
   },
-  heroStatus: { fontSize: 32, fontWeight: '800', letterSpacing: -1, color: colors.textPrimary, lineHeight: 36 },
-  heroSub: { fontSize: 13, color: colors.textSecondary, marginTop: 4 },
+  heroNumRow: { flexDirection: 'row', alignItems: 'baseline', gap: 10 },
+  heroNum: {
+    color: colors.textPrimary,
+    fontSize: 96,
+    fontFamily: fonts.serifBlack,
+    letterSpacing: -4,
+    lineHeight: 96,
+    ...tabularNumbers,
+  },
+  heroNumDanger: { color: colors.danger },
+  heroNumUnit: {
+    color: colors.textMuted,
+    fontSize: 20,
+    fontFamily: fonts.serifSemibold,
+    letterSpacing: -0.3,
+    fontStyle: 'italic',
+  },
+  heroSub: { color: colors.textSecondary, fontSize: 13, fontFamily: fonts.medium, marginTop: 10, marginBottom: 26 },
+
+  heroBarTrack: {
+    height: 3,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: 999,
+    overflow: 'hidden',
+    marginBottom: 22,
+  },
+  heroBarFill: { height: '100%', backgroundColor: colors.accent, borderRadius: 999 },
+  heroBarFillDanger: { backgroundColor: colors.danger },
+
+  heroFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: 18,
+    borderTopWidth: 0.5,
+    borderTopColor: colors.hairline,
+  },
+  heroFooterStat: { flex: 1, alignItems: 'flex-start' },
+  heroFooterValue: {
+    color: colors.textPrimary,
+    fontSize: 22,
+    fontFamily: fonts.serifSemibold,
+    letterSpacing: -0.4,
+    ...tabularNumbers,
+  },
+  heroFooterLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontFamily: fonts.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginTop: 4,
+  },
+  heroFooterDivider: { width: 0.5, height: 32, backgroundColor: colors.hairline, marginHorizontal: 4 },
+  toggleRow: { alignItems: 'flex-start', marginLeft: -6, marginBottom: 2 },
 
   sectionLabel: {
-    fontSize: 10,
     color: colors.textMuted,
+    fontSize: 10,
+    fontFamily: fonts.bold,
     textTransform: 'uppercase',
-    letterSpacing: 1.4,
-    fontWeight: '700',
-    marginBottom: 10,
-    marginLeft: 4,
+    letterSpacing: 1.6,
+    marginBottom: 14,
+    marginLeft: 2,
   },
 
-  card: {
+  // List with hairline-separated rows (replaces card-per-app)
+  list: {
     backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    padding: space.lg,
-    marginBottom: space.xl,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
+    borderRadius: radius.md,
+    borderWidth: 0.5,
+    borderColor: colors.hairline,
+    paddingHorizontal: 14,
+    marginBottom: 24,
     ...shadowSm,
   },
-  cardAccent: {
-    borderColor: colors.accentBorder,
-  },
-
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
+  hairline: { height: 0.5, backgroundColor: colors.hairline },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14 },
   iconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 9,
+    width: 28,
+    height: 28,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  appName: { color: colors.textPrimary, fontSize: 15, fontWeight: '600', letterSpacing: -0.2 },
-  appNameOff: { color: colors.textMuted },
-  appSub: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
-  eduTagline: { color: colors.accent, fontSize: 12, marginTop: 2, fontWeight: '500' },
+  rowName: { color: colors.textPrimary, fontSize: 14, fontFamily: fonts.semibold, letterSpacing: -0.2 },
+  rowNameOff: { color: colors.textMuted },
+  rowMeta: { color: colors.textMuted, fontSize: 11, fontFamily: fonts.medium, marginTop: 2 },
+  rowMetaAccent: { color: colors.accent, fontSize: 11, fontFamily: fonts.medium, marginTop: 2 },
+  statusText: { fontSize: 10, fontFamily: fonts.bold, letterSpacing: 0.6, textTransform: 'uppercase' },
+  statusTextLimited: { color: colors.textSecondary },
+  statusTextOff: { color: colors.textMuted },
 
-  divider: { height: 1, backgroundColor: colors.divider, marginVertical: 6 },
-
-  badgeOn: {
+  dotPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     backgroundColor: colors.accentSoft,
-    borderWidth: 1,
-    borderColor: colors.accentBorder,
+    borderRadius: 999,
   },
-  badgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.accent },
-  badgeOnText: { color: colors.accent, fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
-  badgeMuted: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: radius.pill,
-    backgroundColor: colors.neutral,
-    borderWidth: 1,
-    borderColor: colors.neutralBorder,
-  },
-  badgeMutedText: { color: colors.textSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
-  badgeOff: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: radius.pill,
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-  },
-  badgeOffText: { color: colors.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
+  greenDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.accent },
+  dotPillText: { color: colors.accent, fontSize: 10, fontFamily: fonts.bold, letterSpacing: 0.5, textTransform: 'uppercase' },
 
-  statsRow: { flexDirection: 'row', alignItems: 'center', paddingTop: 8, paddingBottom: 4 },
-  statBlock: { flex: 1, alignItems: 'center', gap: 4 },
-  statDivider: { width: 1, height: 32, backgroundColor: colors.divider },
-  statValue: { color: colors.textPrimary, fontSize: 22, fontWeight: '700', letterSpacing: -0.5 },
-  statValueSuffix: { color: colors.textMuted, fontSize: 14, fontWeight: '500' },
-  statValueEdu: { color: colors.accent },
-  statValueDanger: { color: colors.danger },
-  statLabel: {
-    fontSize: 10,
-    color: colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    fontWeight: '600',
+  // Test Filter card
+  testCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: 14,
+    marginBottom: 24,
+    borderWidth: 0.5,
+    borderColor: colors.hairline,
+    ...shadowSm,
   },
-
-  testHint: { color: colors.textSecondary, fontSize: 12, marginBottom: 12, lineHeight: 17 },
   testInput: {
     backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    borderRadius: radius.md,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    borderWidth: 0.5,
+    borderColor: colors.hairline,
+    borderRadius: radius.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
     color: colors.textPrimary,
     fontSize: 14,
-    marginBottom: 10,
+    fontFamily: fonts.medium,
+    marginBottom: 8,
   },
   testBtn: {
-    backgroundColor: colors.accent,
+    backgroundColor: colors.textPrimary,
     borderRadius: radius.pill,
-    paddingVertical: 13,
+    paddingVertical: 12,
     alignItems: 'center',
   },
   testBtnDisabled: { backgroundColor: colors.neutral },
-  testBtnText: { color: colors.textInverse, fontWeight: '700', fontSize: 14, letterSpacing: 0.2 },
-  errorText: { color: colors.danger, fontSize: 12, marginTop: 10 },
-
-  actionsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 10,
-  },
-  watchBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    paddingVertical: 11,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.accent,
-  },
-  watchBtnText: {
-    color: colors.textInverse,
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-  },
-  recordBtn: {
-    paddingVertical: 11,
-    paddingHorizontal: 16,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-    backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-  },
-  recordBtnText: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.2,
-  },
+  testBtnText: { color: colors.textInverse, fontFamily: fonts.bold, fontSize: 13, letterSpacing: 0.3 },
+  errorText: { color: colors.danger, fontSize: 12, fontFamily: fonts.medium, marginTop: 8 },
 
   resultCard: {
-    marginTop: 14,
-    padding: space.lg,
+    marginTop: 12,
+    padding: 14,
     borderRadius: radius.md,
-    borderWidth: 1,
+    borderWidth: 0.5,
   },
   resultEdu: { backgroundColor: colors.accentSoft, borderColor: colors.accentBorder },
   resultEnt: { backgroundColor: colors.dangerSoft, borderColor: colors.dangerBorder },
   resultErr: {
-    marginTop: 10,
+    marginTop: 8,
     padding: 12,
-    borderRadius: radius.md,
-    backgroundColor: colors.neutral,
-    borderWidth: 1,
-    borderColor: colors.neutralBorder,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 0.5,
+    borderColor: colors.hairline,
   },
   resultErrText: { color: colors.textSecondary, fontSize: 13 },
 
   resultPill: {
     alignSelf: 'flex-start',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: radius.pill,
-    marginBottom: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    marginBottom: 10,
   },
-  resultPillEdu: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.accentBorder },
-  resultPillEnt: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.dangerBorder },
-  resultPillText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
+  resultPillEdu: { backgroundColor: colors.surface, borderWidth: 0.5, borderColor: colors.accentBorder },
+  resultPillEnt: { backgroundColor: colors.surface, borderWidth: 0.5, borderColor: colors.dangerBorder },
+  resultPillText: { fontSize: 10, fontFamily: fonts.bold, letterSpacing: 0.6, textTransform: 'uppercase' },
   resultPillTextEdu: { color: colors.accent },
   resultPillTextEnt: { color: colors.danger },
 
-  resultTitle: { color: colors.textPrimary, fontSize: 15, fontWeight: '600', marginBottom: 4, lineHeight: 20 },
-  resultChannel: { color: colors.textSecondary, fontSize: 13, marginBottom: 8 },
-  resultReason: { color: colors.textMuted, fontSize: 12, fontStyle: 'italic' },
+  resultTitle: { color: colors.textPrimary, fontSize: 14, fontFamily: fonts.semibold, marginBottom: 4, lineHeight: 19, letterSpacing: -0.2 },
+  resultChannel: { color: colors.textSecondary, fontSize: 12, fontFamily: fonts.medium, marginBottom: 6 },
+  resultReason: { color: colors.textMuted, fontSize: 11, fontFamily: fonts.regular, fontStyle: 'italic' },
+
+  actionsRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  watchBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    paddingVertical: 10,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.accent,
+  },
+  watchBtnText: { color: colors.textInverse, fontSize: 13, fontFamily: fonts.bold, letterSpacing: 0.3 },
+  recordBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 0.5,
+    borderColor: colors.hairline,
+  },
+  recordBtnText: { color: colors.textSecondary, fontSize: 12, fontFamily: fonts.semibold },
 });

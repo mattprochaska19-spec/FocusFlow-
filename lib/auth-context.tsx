@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Session } from '@supabase/supabase-js';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
@@ -5,9 +6,15 @@ import { supabase } from './supabase';
 
 export type SignUpRole = 'parent' | 'student';
 
+// signInWithIdToken does not populate session.provider_token, so we capture the
+// Google access token returned by expo-auth-session directly and persist it
+// here. Both Calendar and Classroom API callers read it from this context.
+const GOOGLE_ACCESS_TOKEN_KEY = 'google_access_token';
+
 type AuthContextValue = {
   session: Session | null;
   loading: boolean;
+  googleAccessToken: string | null;
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
   signUp: (
     email: string,
@@ -20,6 +27,7 @@ type AuthContextValue = {
     idToken: string,
     opts: { role?: SignUpRole; familyCode?: string }
   ) => Promise<{ error?: string; needsRoleSetup?: boolean }>;
+  setGoogleAccessToken: (token: string | null) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -27,11 +35,16 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [googleAccessToken, setGoogleAccessTokenState] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setLoading(false);
+    });
+
+    AsyncStorage.getItem(GOOGLE_ACCESS_TOKEN_KEY).then((tok) => {
+      if (tok) setGoogleAccessTokenState(tok);
     });
 
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, sess) => {
@@ -40,6 +53,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => subscription.subscription.unsubscribe();
   }, []);
+
+  const setGoogleAccessToken = async (token: string | null) => {
+    setGoogleAccessTokenState(token);
+    if (token) await AsyncStorage.setItem(GOOGLE_ACCESS_TOKEN_KEY, token);
+    else await AsyncStorage.removeItem(GOOGLE_ACCESS_TOKEN_KEY);
+  };
 
   const signIn: AuthContextValue['signIn'] = async (email, password) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -68,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut();
+    await setGoogleAccessToken(null);
   };
 
   const deleteAccount: AuthContextValue['deleteAccount'] = async () => {
@@ -76,6 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Server has deleted the auth user — local session token is now stale.
     // signOut clears it locally so the auth gate flips back to sign-in immediately.
     await supabase.auth.signOut();
+    await setGoogleAccessToken(null);
     return {};
   };
 
@@ -116,7 +137,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ session, loading, signIn, signUp, signOut, deleteAccount, signInWithGoogleIdToken }}>
+      value={{
+        session,
+        loading,
+        googleAccessToken,
+        signIn,
+        signUp,
+        signOut,
+        deleteAccount,
+        signInWithGoogleIdToken,
+        setGoogleAccessToken,
+      }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,7 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Haptics from 'expo-haptics';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { AppState } from 'react-native';
 
 import { useAuth } from './auth-context';
+import { getMySubmissionState } from './classroom';
+import { fetchChildSchedule, type ScheduleBlock } from './schedule';
 import { supabase } from './supabase';
 import { DEFAULT_EDU_KEYWORDS, DEFAULT_ENT_KEYWORDS } from './youtube-filter';
 
@@ -43,6 +47,26 @@ export type TodayStats = {
 };
 
 export type Override = { minutesAdded: number; expiresAt: number } | null;
+
+export type ActiveFocusSession = {
+  startedAt: number;       // epoch ms
+  endsAt: number;          // epoch ms
+  durationMinutes: number; // original duration, for display
+  anchorTitle: string | null;       // optional assignment label
+  anchorEventId: string | null;     // optional id (Calendar event id, or 'gc:*' Classroom prefix)
+  anchorDueAt: string | null;       // ISO due-at carried through for auto-complete
+  classroomCourseId: string | null;       // present when anchored to a Classroom assignment
+  classroomCourseWorkId: string | null;   // ditto — the pair drives submission polling
+  remoteSessionId?: string;         // present if parent-imposed (read from Supabase)
+};
+
+export type RemoteFocusSession = ActiveFocusSession & {
+  remoteSessionId: string;
+  parentUserId: string;
+  childUserId: string;
+};
+
+export const FOCUS_BONUS_MULTIPLIER = 1.5;
 
 export type Profile = {
   userId: string;
@@ -176,8 +200,21 @@ type FocusContextValue = {
   setAssignmentLockThreshold: (n: number) => void;
   setBulkBonusMinutes: (m: number) => void;
   setBulkBonusThreshold: (n: number) => void;
+  activeFocusSession: ActiveFocusSession | null;
+  startFocusSession: (opts: {
+    durationMinutes: number;
+    anchorTitle?: string;
+    anchorEventId?: string;
+    anchorDueAt?: string | null;
+    classroomCourseId?: string;
+    classroomCourseWorkId?: string;
+  }) => void;
+  endFocusSession: () => void;
+  startRemoteFocus: (opts: { childUserId: string; durationMinutes: number; anchorTitle?: string }) => Promise<{ error?: string; sessionId?: string }>;
+  endRemoteFocus: (sessionId: string) => Promise<{ error?: string }>;
   completedAssignmentsToday: number;
   effectiveDailyLimitMinutes: number;
+  scheduleBlocks: ScheduleBlock[];
   resetToday: () => void;
   reloadProfile: () => void;
 };
@@ -190,8 +227,11 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const [cloudHydrated, setCloudHydrated] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [selfFocusSession, setSelfFocusSession] = useState<ActiveFocusSession | null>(null);
+  const [remoteFocusSession, setRemoteFocusSession] = useState<RemoteFocusSession | null>(null);
+  const [scheduleBlocks, setScheduleBlocks] = useState<ScheduleBlock[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
-  const { session } = useAuth();
+  const { session, googleAccessToken } = useAuth();
 
   // Hashes of last cloud-known settings/today blobs, to prevent realtime echo
   // loops (a write triggers a realtime event that would otherwise re-write).
@@ -656,6 +696,237 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     setState((s) => ({ ...s, bulkBonusThreshold: Math.max(1, Math.round(n)) }));
   }, []);
 
+  const startFocusSession = useCallback(
+    (opts: {
+      durationMinutes: number;
+      anchorTitle?: string;
+      anchorEventId?: string;
+      anchorDueAt?: string | null;
+      classroomCourseId?: string;
+      classroomCourseWorkId?: string;
+    }) => {
+      const duration = Math.max(1, Math.round(opts.durationMinutes));
+      const startedAt = Date.now();
+      setSelfFocusSession({
+        startedAt,
+        endsAt: startedAt + duration * 60_000,
+        durationMinutes: duration,
+        anchorTitle: opts.anchorTitle ?? null,
+        anchorEventId: opts.anchorEventId ?? null,
+        anchorDueAt: opts.anchorDueAt ?? null,
+        classroomCourseId: opts.classroomCourseId ?? null,
+        classroomCourseWorkId: opts.classroomCourseWorkId ?? null,
+      });
+    },
+    []
+  );
+
+  const endFocusSession = useCallback(() => {
+    setSelfFocusSession(null);
+  }, []);
+
+  const startRemoteFocus = useCallback(
+    async (opts: { childUserId: string; durationMinutes: number; anchorTitle?: string }) => {
+      const { data, error } = await supabase.rpc('start_remote_focus', {
+        p_child_user_id: opts.childUserId,
+        p_duration_minutes: Math.max(1, Math.round(opts.durationMinutes)),
+        p_anchor_title: opts.anchorTitle ?? null,
+      });
+      if (error) return { error: error.message };
+      return { sessionId: data as string };
+    },
+    []
+  );
+
+  const endRemoteFocus = useCallback(async (sessionId: string) => {
+    const { error } = await supabase.rpc('end_remote_focus', { p_session_id: sessionId });
+    if (error) return { error: error.message };
+    return {};
+  }, []);
+
+  // Auto-clear self-session when its timer expires
+  useEffect(() => {
+    if (!selfFocusSession) return;
+    const remaining = selfFocusSession.endsAt - Date.now();
+    if (remaining <= 0) {
+      setSelfFocusSession(null);
+      return;
+    }
+    const id = setTimeout(() => setSelfFocusSession(null), remaining);
+    return () => clearTimeout(id);
+  }, [selfFocusSession?.endsAt]);
+
+  // Phase B: poll Classroom submission state during a Classroom-anchored
+  // self-session. On TURNED_IN/RETURNED, mint the 1.5× bonus directly via
+  // auto_complete_classroom_assignment (no parent approval — API is the
+  // source of truth) and end the session. AppState 'active' triggers an
+  // immediate poll so the kid sees auto-end within ~500ms of returning to
+  // FocusFlow after submitting in the Classroom app.
+  useEffect(() => {
+    const sess = selfFocusSession;
+    if (!sess?.classroomCourseId || !sess?.classroomCourseWorkId) return;
+    if (!googleAccessToken) return;
+
+    let stopped = false;
+    const minutesPerAssignment = state.minutesPerAssignment;
+
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const subState = await getMySubmissionState(
+          googleAccessToken,
+          sess.classroomCourseId!,
+          sess.classroomCourseWorkId!,
+        );
+        if (subState !== 'TURNED_IN' && subState !== 'RETURNED') return;
+
+        const minutes = Math.round(minutesPerAssignment * FOCUS_BONUS_MULTIPLIER);
+        const { error } = await supabase.rpc('auto_complete_classroom_assignment', {
+          p_google_event_id: sess.anchorEventId,
+          p_title: sess.anchorTitle,
+          p_due_at: sess.anchorDueAt,
+          p_minutes: minutes,
+        });
+        if (error) {
+          console.warn('[FocusFlow] auto-complete failed:', error.message);
+          return; // retry on next poll
+        }
+        stopped = true;
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        setSelfFocusSession(null);
+      } catch (e) {
+        if (e instanceof Error && /expired/i.test(e.message)) {
+          // Token expired mid-session — keep the session running on its timer,
+          // just stop polling. Kid can re-auth after the session ends.
+          stopped = true;
+          console.warn('[FocusFlow] Google token expired during focus session');
+        }
+      }
+    };
+
+    poll(); // initial poll on mount / on session start
+
+    const intervalId = setInterval(poll, 30_000);
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') poll();
+    });
+
+    return () => {
+      stopped = true;
+      clearInterval(intervalId);
+      sub.remove();
+    };
+  }, [
+    selfFocusSession?.classroomCourseId,
+    selfFocusSession?.classroomCourseWorkId,
+    selfFocusSession?.anchorEventId,
+    selfFocusSession?.anchorTitle,
+    selfFocusSession?.anchorDueAt,
+    googleAccessToken,
+    state.minutesPerAssignment,
+  ]);
+
+  // Auto-clear remote session when its timer expires (the row stays in DB as
+  // history; we just stop displaying it as active locally)
+  useEffect(() => {
+    if (!remoteFocusSession) return;
+    const remaining = remoteFocusSession.endsAt - Date.now();
+    if (remaining <= 0) {
+      setRemoteFocusSession(null);
+      return;
+    }
+    const id = setTimeout(() => setRemoteFocusSession(null), remaining);
+    return () => clearTimeout(id);
+  }, [remoteFocusSession?.endsAt]);
+
+  // Subscribe to remote focus sessions targeting this user (students only).
+  // Parent-imposed sessions arrive here and trigger the same lockdown UI.
+  useEffect(() => {
+    if (!session) return;
+    const userId = session.user.id;
+
+    const refetch = async () => {
+      const { data } = await supabase
+        .from('remote_focus_sessions')
+        .select('*')
+        .eq('child_user_id', userId)
+        .gt('ends_at', new Date().toISOString())
+        .order('ends_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (data) {
+        const s = data as {
+          id: string; parent_user_id: string; child_user_id: string;
+          started_at: string; ends_at: string; duration_minutes: number; anchor_title: string | null;
+        };
+        setRemoteFocusSession({
+          remoteSessionId: s.id,
+          parentUserId: s.parent_user_id,
+          childUserId: s.child_user_id,
+          startedAt: new Date(s.started_at).getTime(),
+          endsAt: new Date(s.ends_at).getTime(),
+          durationMinutes: s.duration_minutes,
+          anchorTitle: s.anchor_title,
+          anchorEventId: null,
+          anchorDueAt: null,
+          classroomCourseId: null,
+          classroomCourseWorkId: null,
+        });
+      } else {
+        setRemoteFocusSession(null);
+      }
+    };
+    refetch();
+
+    const channel = supabase
+      .channel(`remote-focus:${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'remote_focus_sessions', filter: `child_user_id=eq.${userId}` },
+        () => { refetch(); }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [session?.user.id]);
+
+  // Schedule blocks (kid's own). Empty for parents (their child_user_id is
+  // never set). Subscribed via realtime so parent edits propagate within
+  // seconds to the child's access decisions.
+  useEffect(() => {
+    if (!session) {
+      setScheduleBlocks([]);
+      return;
+    }
+    const userId = session.user.id;
+    const refetchSchedule = async () => {
+      const rows = await fetchChildSchedule(userId);
+      setScheduleBlocks(rows);
+    };
+    refetchSchedule();
+
+    const channel = supabase
+      .channel(`schedule-self:${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'child_schedule_blocks', filter: `child_user_id=eq.${userId}` },
+        () => { refetchSchedule(); },
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [session?.user.id]);
+
+  // Whichever active session has the latest endsAt wins for lockdown purposes.
+  // Remote takes precedence on equality so the child can't bypass via self-end.
+  const activeFocusSession = useMemo<ActiveFocusSession | null>(() => {
+    const now = Date.now();
+    const remoteActive = remoteFocusSession && remoteFocusSession.endsAt > now ? remoteFocusSession : null;
+    const selfActive = selfFocusSession && selfFocusSession.endsAt > now ? selfFocusSession : null;
+    if (remoteActive && selfActive) {
+      return remoteActive.endsAt >= selfActive.endsAt ? remoteActive : selfActive;
+    }
+    return remoteActive ?? selfActive;
+  }, [remoteFocusSession, selfFocusSession]);
+
   const value: FocusContextValue = {
     state,
     hydrated,
@@ -680,10 +951,16 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     setAssignmentLockThreshold,
     setBulkBonusMinutes,
     setBulkBonusThreshold,
+    activeFocusSession,
+    startFocusSession,
+    endFocusSession,
+    startRemoteFocus,
+    endRemoteFocus,
     completedAssignmentsToday,
     assignments,
     earnedMinutesToday,
     effectiveDailyLimitMinutes,
+    scheduleBlocks,
     resetToday,
     reloadProfile,
   };

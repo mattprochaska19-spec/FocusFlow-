@@ -150,24 +150,9 @@ export default function SettingsScreen() {
 function FamilySection() {
   const { profile } = useFocus();
   if (!profile) return null;
-
-  if (profile.role === 'parent') {
-    return (
-      <Card icon="people-outline" title="Family">
-        <Text style={styles.familyHint}>Share this code with your child to link their device.</Text>
-        <View style={styles.familyCodeBox}>
-          <Text style={styles.familyCodeText}>{profile.familyCode ?? '— —'}</Text>
-        </View>
-        <Text style={styles.hint}>
-          When your child signs up and enters this code, your rules apply to their device automatically.
-        </Text>
-
-        <View style={styles.toggleDivider} />
-
-        <ChildrenList />
-      </Card>
-    );
-  }
+  // Parents view the family code + children dashboard in the dedicated Family
+  // tab. Settings still hosts the student-side link-to-parent form.
+  if (profile.role === 'parent') return null;
 
   return (
     <Card icon="people-outline" title="Family">
@@ -242,174 +227,6 @@ function LinkToParentForm() {
   );
 }
 
-type LinkedChild = {
-  user_id: string;
-  email: string;
-  entertainment_seconds: number;
-  educational_seconds: number;
-  video_count: number;
-};
-
-function ChildrenList() {
-  const { state, effectiveDailyLimitMinutes, assignments } = useFocus();
-  const [children, setChildren] = useState<LinkedChild[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const todayDate = new Date().toISOString().split('T')[0];
-
-  const refresh = async () => {
-    setLoading(true);
-    setError(null);
-    const { data, error } = await supabase.rpc('get_my_children_with_stats', { stats_date: todayDate });
-    setLoading(false);
-    if (error) {
-      setError(error.message);
-      return;
-    }
-    setChildren((data ?? []) as LinkedChild[]);
-  };
-
-  useEffect(() => { refresh(); }, []);
-
-  // Realtime: refetch whenever any reachable daily_stats row changes.
-  // RLS limits this to own + children's rows, so this fires on either parent or child writes.
-  useEffect(() => {
-    const channel = supabase
-      .channel('children-stats-watch')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'daily_stats' },
-        () => { refresh(); }
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <View>
-      <View style={styles.childrenHeader}>
-        <Text style={styles.childrenTitle}>Linked children</Text>
-        <Pressable onPress={refresh} hitSlop={8} disabled={loading}>
-          {loading
-            ? <ActivityIndicator size="small" color={colors.textMuted} />
-            : <Ionicons name="refresh" size={16} color={colors.textSecondary} />}
-        </Pressable>
-      </View>
-
-      {error && <Text style={styles.errorText}>{error}</Text>}
-
-      {children === null && !loading && (
-        <Text style={styles.empty}>—</Text>
-      )}
-
-      {children?.length === 0 && (
-        <Text style={styles.empty}>
-          No children linked yet. Share your family code so they can sign up and connect.
-        </Text>
-      )}
-
-      {children && children.length > 0 && (
-        <View style={{ gap: 8 }}>
-          {children.map((c) => {
-            const entMins = Math.floor(c.entertainment_seconds / 60);
-            const eduMins = Math.floor(c.educational_seconds / 60);
-            const limit = effectiveDailyLimitMinutes;
-            const overLimit = state.focusModeEnabled && entMins >= limit;
-            const childPending = assignments.filter(
-              (a) => a.studentUserId === c.user_id && a.status === 'pending_review'
-            );
-            return (
-              <View key={c.user_id} style={{ gap: 8 }}>
-                <View style={styles.childRow}>
-                  <View style={styles.childAvatar}>
-                    <Text style={styles.childAvatarText}>{c.email.charAt(0).toUpperCase()}</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.childEmail} numberOfLines={1}>{c.email}</Text>
-                    <View style={styles.childStatsRow}>
-                      <Text style={[styles.childStat, overLimit && { color: colors.danger }]}>
-                        {entMins}m / {limit}m entertainment
-                      </Text>
-                      <Text style={styles.childStatDivider}>·</Text>
-                      <Text style={[styles.childStat, { color: colors.accent }]}>{eduMins}m edu</Text>
-                    </View>
-                    <Text style={styles.childStatSecondary}>{c.video_count} videos today</Text>
-                  </View>
-                </View>
-
-                {childPending.length > 0 && (
-                  <View style={styles.pendingWrap}>
-                    <Text style={styles.pendingHeader}>
-                      {childPending.length} pending review
-                    </Text>
-                    {childPending.map((a) => (
-                      <PendingAssignmentRow key={a.id} assignmentId={a.id} title={a.title} minutes={a.minutesEarned} />
-                    ))}
-                  </View>
-                )}
-              </View>
-            );
-          })}
-        </View>
-      )}
-    </View>
-  );
-}
-
-function PendingAssignmentRow({
-  assignmentId,
-  title,
-  minutes,
-}: {
-  assignmentId: string;
-  title: string;
-  minutes: number;
-}) {
-  const [busy, setBusy] = useState<'approve' | 'reject' | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const approve = async () => {
-    setBusy('approve');
-    const { error } = await supabase.rpc('approve_assignment', { p_id: assignmentId });
-    setBusy(null);
-    if (error) setError(error.message);
-  };
-
-  const reject = async () => {
-    setBusy('reject');
-    const { error } = await supabase.rpc('reject_assignment', { p_id: assignmentId });
-    setBusy(null);
-    if (error) setError(error.message);
-  };
-
-  return (
-    <View style={styles.pendingRow}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.pendingTitle} numberOfLines={2}>{title}</Text>
-        <Text style={styles.pendingMeta}>+{minutes}m if approved</Text>
-        {error && <Text style={styles.errorText}>{error}</Text>}
-      </View>
-      <Pressable
-        onPress={reject}
-        disabled={!!busy}
-        style={({ pressed }) => [styles.pendingBtn, styles.pendingReject, pressed && { opacity: 0.85 }]}>
-        {busy === 'reject'
-          ? <ActivityIndicator size="small" color={colors.danger} />
-          : <Ionicons name="close" size={16} color={colors.danger} />}
-      </Pressable>
-      <Pressable
-        onPress={approve}
-        disabled={!!busy}
-        style={({ pressed }) => [styles.pendingBtn, styles.pendingApprove, pressed && { opacity: 0.85 }]}>
-        {busy === 'approve'
-          ? <ActivityIndicator size="small" color={colors.textInverse} />
-          : <Ionicons name="checkmark" size={16} color={colors.textInverse} />}
-      </Pressable>
-    </View>
-  );
-}
 
 function AccountSection() {
   const { session, signOut, deleteAccount } = useAuth();
@@ -1029,7 +846,7 @@ function ChannelLimitsSection({
 }
 
 function TestAccessSection() {
-  const { state, completedAssignmentsToday } = useFocus();
+  const { state, completedAssignmentsToday, activeFocusSession, scheduleBlocks } = useFocus();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [decision, setDecision] = useState<AccessDecision | null>(null);
@@ -1044,7 +861,13 @@ function TestAccessSection() {
       return;
     }
     setLoading(true);
-    const d = await decideAccess(id, state, completedAssignmentsToday);
+    const d = await decideAccess(id, state, completedAssignmentsToday, {
+      active: !!activeFocusSession,
+      remainingSeconds: activeFocusSession
+        ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
+        : 0,
+      anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
+    }, scheduleBlocks);
     setLoading(false);
     setDecision(d);
   };
@@ -1348,83 +1171,6 @@ const styles = StyleSheet.create({
     letterSpacing: 4,
     fontVariant: ['tabular-nums'],
   },
-
-  childrenHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  childrenTitle: {
-    color: colors.textMuted,
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 1.4,
-    fontWeight: '700',
-  },
-  childRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    padding: 12,
-    backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    borderRadius: radius.md,
-  },
-  childAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  childAvatarText: { color: colors.textInverse, fontSize: 15, fontWeight: '700' },
-  childEmail: { color: colors.textPrimary, fontSize: 14, fontWeight: '600', letterSpacing: -0.2 },
-  childStatsRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6, marginTop: 4 },
-  childStat: { color: colors.textSecondary, fontSize: 12, fontWeight: '600' },
-  childStatDivider: { color: colors.textMuted, fontSize: 12 },
-  childStatSecondary: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
-
-  pendingWrap: {
-    backgroundColor: colors.accentSoft,
-    borderWidth: 1,
-    borderColor: colors.accentBorder,
-    borderRadius: radius.md,
-    padding: 10,
-    gap: 8,
-  },
-  pendingHeader: {
-    color: colors.accent,
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    marginBottom: 2,
-  },
-  pendingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    borderRadius: radius.md,
-  },
-  pendingTitle: { color: colors.textPrimary, fontSize: 13, fontWeight: '600' },
-  pendingMeta: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
-  pendingBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pendingReject: { backgroundColor: colors.dangerSoft, borderWidth: 1, borderColor: colors.dangerBorder },
-  pendingApprove: { backgroundColor: colors.accent },
 
   linkCodeInput: {
     fontSize: 18,

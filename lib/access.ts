@@ -1,5 +1,11 @@
 import { checkVideoCached } from './cache';
 import type { FocusState } from './focus-context';
+import {
+  getActiveBlocks,
+  isAppBlockedNow,
+  minutesToTime,
+  type ScheduleBlock,
+} from './schedule';
 import type { Classification, VideoData } from './youtube-filter';
 
 export type AccessReason =
@@ -13,7 +19,10 @@ export type AccessReason =
   | 'daily_limit'
   | 'channel_limit'
   | 'creator_count_limit'
-  | 'assignments_required';
+  | 'assignments_required'
+  | 'focus_session_active'
+  | 'schedule_block'
+  | 'schedule_window_limit';
 
 export type AccessDetails = {
   dailyLimitMinutes?: number;
@@ -26,6 +35,12 @@ export type AccessDetails = {
   creatorName?: string;
   assignmentsRequired?: number;
   assignmentsCompleted?: number;
+  focusRemainingSeconds?: number;
+  focusAnchorTitle?: string;
+  scheduleLabel?: string | null;
+  scheduleEndsAtMinutes?: number;
+  scheduleWindowLimit?: number;
+  scheduleWindowUsed?: number;
 };
 
 export type AccessDecision = {
@@ -37,13 +52,40 @@ export type AccessDecision = {
   error?: string;
 };
 
+export type FocusSessionContext = {
+  active: boolean;
+  remainingSeconds?: number;
+  anchorTitle?: string;
+};
+
 export async function decideAccess(
   videoId: string,
   state: FocusState,
-  completedAssignmentsToday: number = 0
+  completedAssignmentsToday: number = 0,
+  focusSession: FocusSessionContext = { active: false },
+  scheduleBlocks: ScheduleBlock[] = []
 ): Promise<AccessDecision> {
   if (!state.focusModeEnabled) {
     return { allowed: true, reason: 'focus_off' };
+  }
+
+  // Schedule block: parent's recurring time-window rule for YouTube.
+  //   limitMinutes === null → fully blocked (no YouTube, even educational)
+  //   limitMinutes >  0     → entertainment cap during this window;
+  //                            educational still passes
+  const activeYtBlock = getActiveBlocks(scheduleBlocks).find(
+    (b) => b.blockedApps.includes('youtube') || b.blockedApps.includes('all'),
+  );
+
+  if (activeYtBlock && (activeYtBlock.limitMinutes === null || activeYtBlock.limitMinutes <= 0)) {
+    return {
+      allowed: false,
+      reason: 'schedule_block',
+      details: {
+        scheduleLabel: activeYtBlock.label ?? null,
+        scheduleEndsAtMinutes: activeYtBlock.endMinutes,
+      },
+    };
   }
 
   const result = await checkVideoCached(videoId, {
@@ -63,6 +105,21 @@ export async function decideAccess(
 
   if (classification.isEducational) {
     return { allowed: true, reason: 'educational', classification, video };
+  }
+
+  // Active focus session locks all entertainment for its duration; educational
+  // (above) still passes so kids can use the app for actual research/study.
+  if (focusSession.active) {
+    return {
+      allowed: false,
+      reason: 'focus_session_active',
+      classification,
+      video,
+      details: {
+        focusRemainingSeconds: focusSession.remainingSeconds,
+        focusAnchorTitle: focusSession.anchorTitle,
+      },
+    };
   }
 
   // Lock entertainment behind assignment completion if the parent enabled it.
@@ -100,20 +157,40 @@ export async function decideAccess(
     return { allowed: true, reason: 'creator_allowance', classification, video, details };
   }
 
-  // Daily entertainment time limit (with optional override)
+  // Daily entertainment time limit (with optional override). If a limited
+  // schedule window is active for YouTube, its limit_minutes overrides the
+  // daily cap during the window — usually a tighter restriction (e.g. 15 min
+  // during school hours).
   const overrideMinutes =
     state.allowOverride && state.override && state.override.expiresAt > Date.now()
       ? state.override.minutesAdded
       : 0;
-  const dailyLimitMinutes = state.dailyLimitMinutes + overrideMinutes;
+  const baseDailyCap = state.dailyLimitMinutes + overrideMinutes;
   const entertainmentMinutesUsed = Math.floor(state.today.entertainmentSeconds / 60);
-  if (state.today.entertainmentSeconds >= dailyLimitMinutes * 60) {
+
+  if (activeYtBlock && activeYtBlock.limitMinutes !== null && activeYtBlock.limitMinutes > 0) {
+    const windowCap = activeYtBlock.limitMinutes;
+    if (entertainmentMinutesUsed >= windowCap) {
+      return {
+        allowed: false,
+        reason: 'schedule_window_limit',
+        classification,
+        video,
+        details: {
+          scheduleLabel: activeYtBlock.label ?? null,
+          scheduleEndsAtMinutes: activeYtBlock.endMinutes,
+          scheduleWindowLimit: windowCap,
+          scheduleWindowUsed: entertainmentMinutesUsed,
+        },
+      };
+    }
+  } else if (state.today.entertainmentSeconds >= baseDailyCap * 60) {
     return {
       allowed: false,
       reason: 'daily_limit',
       classification,
       video,
-      details: { dailyLimitMinutes, entertainmentMinutesUsed },
+      details: { dailyLimitMinutes: baseDailyCap, entertainmentMinutesUsed },
     };
   }
 
@@ -137,12 +214,16 @@ export async function decideAccess(
     }
   }
 
+  const effectiveCap =
+    activeYtBlock && activeYtBlock.limitMinutes !== null && activeYtBlock.limitMinutes > 0
+      ? activeYtBlock.limitMinutes
+      : baseDailyCap;
   return {
     allowed: true,
     reason: 'within_limits',
     classification,
     video,
-    details: { dailyLimitMinutes, entertainmentMinutesUsed },
+    details: { dailyLimitMinutes: effectiveCap, entertainmentMinutesUsed },
   };
 }
 
@@ -199,6 +280,39 @@ export function describeDecision(d: AccessDecision): { headline: string; detail:
       return {
         headline: 'Finish your work first',
         detail: `Complete ${remaining} more ${remaining === 1 ? 'assignment' : 'assignments'} (${done} of ${need} done) to unlock entertainment.`,
+      };
+    }
+    case 'focus_session_active': {
+      const secs = d.details?.focusRemainingSeconds ?? 0;
+      const mm = Math.floor(secs / 60);
+      const ss = secs % 60;
+      const remaining = secs > 60 ? `${mm} min` : `${mm}:${String(ss).padStart(2, '0')}`;
+      const anchor = d.details?.focusAnchorTitle;
+      return {
+        headline: 'Stay focused',
+        detail: anchor
+          ? `${remaining} left in your focus session on "${anchor}". Entertainment unlocks when the timer ends or you stop the session.`
+          : `${remaining} left in your focus session. Entertainment unlocks when the timer ends or you stop the session.`,
+      };
+    }
+    case 'schedule_block': {
+      const label = d.details?.scheduleLabel;
+      const endMin = d.details?.scheduleEndsAtMinutes;
+      const endStr = endMin !== undefined ? minutesToTime(endMin) : 'later today';
+      return {
+        headline: label ?? 'Blocked',
+        detail: `Entertainment is blocked by your parent's schedule. Unblocks at ${endStr}.`,
+      };
+    }
+    case 'schedule_window_limit': {
+      const label = d.details?.scheduleLabel;
+      const used = d.details?.scheduleWindowUsed ?? 0;
+      const cap = d.details?.scheduleWindowLimit ?? 0;
+      const endMin = d.details?.scheduleEndsAtMinutes;
+      const endStr = endMin !== undefined ? minutesToTime(endMin) : 'later today';
+      return {
+        headline: label ? `${label} cap reached` : 'Window cap reached',
+        detail: `Used ${used} of ${cap} min for this window. Daily cap resets after ${endStr}.`,
       };
     }
   }

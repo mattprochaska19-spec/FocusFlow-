@@ -22,14 +22,23 @@ type Mode = 'signin' | 'signup';
 
 export default function SignInScreen() {
   const insets = useSafeAreaInsets();
-  const { signIn, signUp, signInWithGoogleIdToken } = useAuth();
+  const { signIn, signUp, signInWithGoogleIdToken, setGoogleAccessToken } = useAuth();
 
   // Native Google sign-in via the iOS OAuth client — no redirect URL involved.
-  // Calendar.readonly scope is requested upfront so the access token is later
-  // usable for Google Calendar API calls without a second consent prompt.
+  // Calendar + Classroom scopes are requested upfront so the access token can
+  // hit both APIs without a second consent prompt. Adding new scopes triggers
+  // Google's incremental consent on the next sign-in for existing users.
   const [googleRequest, googleResponse, promptGoogle] = Google.useAuthRequest({
     iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-    scopes: ['email', 'profile', 'openid', 'https://www.googleapis.com/auth/calendar.readonly'],
+    scopes: [
+      'email',
+      'profile',
+      'openid',
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/classroom.courses.readonly',
+      'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
+      'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly',
+    ],
   });
 
   // Latest role/code at the moment Google returns — refs survive across the
@@ -104,6 +113,7 @@ export default function SignInScreen() {
       return;
     }
     const idToken = googleResponse.authentication?.idToken;
+    const accessToken = googleResponse.authentication?.accessToken ?? null;
     if (!idToken) {
       setGoogleSubmitting(false);
       setError('Google did not return an ID token');
@@ -122,13 +132,16 @@ export default function SignInScreen() {
         setError(result.error);
         return;
       }
+      // Persist Google access token after Supabase exchange succeeds — it
+      // unlocks Calendar + Classroom API calls in the rest of the app.
+      if (accessToken) await setGoogleAccessToken(accessToken);
       if (result.needsRoleSetup) {
         setInfo(
           "Signed in with Google. Switch to 'Create one' below and pick Parent or Student to finish setup.",
         );
       }
     })();
-  }, [googleResponse, signInWithGoogleIdToken]);
+  }, [googleResponse, signInWithGoogleIdToken, setGoogleAccessToken]);
 
   return (
     <KeyboardAvoidingView
