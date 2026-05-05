@@ -1,6 +1,6 @@
-import { Ionicons } from '@expo/vector-icons';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { Mascot, type MascotPose } from '@/components/mascot';
 import { describeDecision, type AccessDecision } from '@/lib/access';
 import { colors, radius, shadow, space } from '@/lib/theme';
 
@@ -23,17 +23,21 @@ export function BlockModal({
   const isChannel = decision.reason === 'channel_limit';
   const isNotFound = decision.reason === 'not_found';
 
+  // Pick the mascot pose that matches the block's emotional register.
+  // Focus session: meditating (kid is "doing the work"). Not found: thinking
+  // (genuine confusion). Everything else: disappointed (limit reached / blocked).
+  const mascotPose: MascotPose =
+    decision.reason === 'focus_session_active'
+      ? 'meditating'
+      : isNotFound
+        ? 'thinking'
+        : 'disappointed';
+
   return (
     <Modal animationType="fade" transparent visible={!!decision} onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          <View style={styles.iconWrap}>
-            <Ionicons
-              name={isNotFound ? 'help-circle' : 'lock-closed'}
-              size={26}
-              color={colors.danger}
-            />
-          </View>
+          <Mascot pose={mascotPose} size="lg" style={styles.mascot} />
 
           <Text style={styles.headline}>{desc.headline}</Text>
           <Text style={styles.detail}>{desc.detail}</Text>
@@ -112,17 +116,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     ...shadow,
   },
-  iconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: colors.dangerSoft,
-    borderWidth: 1,
-    borderColor: colors.dangerBorder,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 14,
-  },
+  mascot: { marginBottom: 8, marginTop: -8 },
   headline: {
     color: colors.textPrimary,
     fontSize: 22,

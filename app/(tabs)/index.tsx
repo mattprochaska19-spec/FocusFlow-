@@ -1,7 +1,7 @@
 import { FontAwesome5, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AssignmentsSection } from '@/components/assignments-section';
 import { BlockModal } from '@/components/block-modal';
 import { FocusSessionCard } from '@/components/focus-session-card';
+import { MascotWithSpeech } from '@/components/speech-bubble';
 import { decideAccess, type AccessDecision } from '@/lib/access';
 import { checkVideoCached } from '@/lib/cache';
 import { useFocus, type AppId } from '@/lib/focus-context';
@@ -34,7 +35,9 @@ const BRAND = {
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const { state, setFocusMode, effectiveDailyLimitMinutes } = useFocus();
+  const { state, setFocusMode, effectiveDailyLimitMinutes, profile } = useFocus();
+
+  const greeting = useMemo(() => buildGreeting(profile), [profile?.displayName, profile?.role]);
 
   const focusOn = state.focusModeEnabled;
   const limitedActiveCount = focusOn ? state.limitedApps.filter((a) => a.enabled).length : 0;
@@ -63,6 +66,13 @@ export default function HomeScreen() {
         </View>
         <View style={[styles.statusDot, focusOn && styles.statusDotOn]} />
       </View>
+
+      <MascotWithSpeech
+        pose={greeting.pose}
+        text={greeting.text}
+        size="md"
+        containerStyle={{ marginBottom: 24 }}
+      />
 
       {/* Hero stat: today's entertainment usage */}
       <View style={styles.hero}>
@@ -104,9 +114,9 @@ export default function HomeScreen() {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   setFocusMode(v);
                 }}
-                trackColor={{ false: colors.surfaceAlt, true: colors.accent }}
-                thumbColor={colors.textPrimary}
-                ios_backgroundColor={colors.surfaceAlt}
+                trackColor={{ false: colors.neutralBorder, true: colors.accent }}
+                thumbColor={colors.surface}
+                ios_backgroundColor={colors.neutralBorder}
                 style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
               />
             </View>
@@ -130,8 +140,8 @@ export default function HomeScreen() {
         })}
         <View style={styles.hairline} />
         <View style={styles.row}>
-          <View style={[styles.iconWrap, { backgroundColor: colors.dangerSoft }]}>
-            <FontAwesome5 name="youtube" size={14} color="#FF4D4D" />
+          <View style={[styles.iconWrap, { backgroundColor: '#FFE5E5' }]}>
+            <FontAwesome5 name="youtube" size={14} color="#FF0000" />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.rowName}>YouTube</Text>
@@ -334,6 +344,35 @@ function ResultCard({ result }: { result: FilterResult }) {
       <Text style={styles.resultReason}>{reasonLabel}</Text>
     </View>
   );
+}
+
+// Time-of-day + role aware greeting message + matching mascot pose.
+function buildGreeting(profile: { displayName: string | null; role: 'parent' | 'student' } | null) {
+  const name = profile?.displayName ?? '';
+  const isParent = profile?.role === 'parent';
+  const hour = new Date().getHours();
+
+  const who = name ? `, ${name}` : '';
+
+  if (isParent) {
+    return {
+      pose: 'happy' as const,
+      text: name
+        ? `Hey ${name}! Check the Family tab to see how your kids are doing.`
+        : 'Hey! Check the Family tab to see how your kids are doing.',
+    };
+  }
+
+  if (hour >= 5 && hour < 12) {
+    return { pose: 'happy' as const, text: `Good morning${who}! Let's make today a great one.` };
+  }
+  if (hour >= 12 && hour < 17) {
+    return { pose: 'encouraging' as const, text: `Hey${who}! Ready to keep going?` };
+  }
+  if (hour >= 17 && hour < 21) {
+    return { pose: 'happy' as const, text: `Evening${who}. What's on the docket?` };
+  }
+  return { pose: 'thinking' as const, text: `Up late${who}? Don't forget to rest.` };
 }
 
 const styles = StyleSheet.create({

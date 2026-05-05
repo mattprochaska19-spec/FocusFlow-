@@ -3,6 +3,8 @@ import Slider from '@react-native-community/slider';
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { Mascot } from '@/components/mascot';
+import { MascotWithSpeech } from '@/components/speech-bubble';
 import { useAuth } from '@/lib/auth-context';
 import { fetchClassroomAssignments, type ClassroomAssignment } from '@/lib/classroom';
 import { useFocus } from '@/lib/focus-context';
@@ -169,10 +171,18 @@ function ActiveCard({ onEnd }: { onEnd: () => void }) {
   const mm = Math.floor(remaining / 60_000);
   const ss = Math.floor((remaining % 60_000) / 1000);
 
+  const encouragement = pickEncouragement(pct, activeFocusSession.anchorTitle);
+
   return (
     <>
       <Text style={[styles.sectionLabel, { color: colors.accent }]}>Focusing</Text>
       <View style={[styles.card, styles.cardActive]}>
+        <MascotWithSpeech
+          pose="meditating"
+          text={encouragement}
+          size="md"
+          containerStyle={{ marginBottom: 14 }}
+        />
         {activeFocusSession.anchorTitle ? (
           <Text style={styles.activeAnchor} numberOfLines={2}>
             {activeFocusSession.anchorTitle}
@@ -211,6 +221,17 @@ function ActiveCard({ onEnd }: { onEnd: () => void }) {
       </View>
     </>
   );
+}
+
+// Bucketed encouragement messages for active focus sessions. Computed from
+// percent-elapsed; updates 4-5 times during a session, which is plenty
+// without being noisy. Anchor title woven in when present for context.
+function pickEncouragement(pct: number, anchor: string | null): string {
+  if (pct < 20) return anchor ? `Settling in on "${anchor}". You got this.` : 'Settling in. Deep breath.';
+  if (pct < 50) return anchor ? `In the zone with "${anchor}".` : "You're getting in the zone!";
+  if (pct < 75) return 'Halfway there — keep going!';
+  if (pct < 92) return 'Almost done — push through!';
+  return 'Final stretch! 💪';
 }
 
 const styles = StyleSheet.create({
@@ -299,6 +320,7 @@ const styles = StyleSheet.create({
   startBtnText: { color: colors.textInverse, fontWeight: '700', fontSize: 14, letterSpacing: 0.2 },
 
   // Active state
+  activeMascot: { alignSelf: 'center', marginBottom: 4 },
   activeAnchor: {
     color: colors.textPrimary,
     fontSize: 14,

@@ -1,7 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { Celebration } from '@/components/celebration';
+import { Mascot } from '@/components/mascot';
 import { useAuth } from '@/lib/auth-context';
 import { fetchClassroomAssignments } from '@/lib/classroom';
 import { FOCUS_BONUS_MULTIPLIER, useFocus, type Assignment } from '@/lib/focus-context';
@@ -32,6 +34,8 @@ export function AssignmentsSection() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<string | null>(null);
+  const [celebrate, setCelebrate] = useState<{ title: string; subtitle?: string; pose?: 'excited' | 'happy' | 'encouraging' } | null>(null);
+  const lastDoneCountRef = useRef<number | null>(null);
 
   const accessToken = googleAccessToken;
 
@@ -118,6 +122,33 @@ export function AssignmentsSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
 
+  // Milestone: when the kid transitions from "some left to do" to "everything
+  // done today", celebrate. Skip the initial mount (prev=null) so opening the
+  // app to an already-clean slate doesn't re-trigger the celebration.
+  useEffect(() => {
+    if (!items || items.length === 0) {
+      lastDoneCountRef.current = null;
+      return;
+    }
+    const completedExternalIds = new Set(
+      assignments
+        .filter((a) => a.studentUserId === session?.user.id && a.status === 'completed')
+        .map((a) => a.googleEventId),
+    );
+    const doneCount = items.filter((item) => completedExternalIds.has(item.id)).length;
+    const total = items.length;
+    const prev = lastDoneCountRef.current;
+    if (prev !== null && prev < total && doneCount === total) {
+      const name = profile?.displayName ?? '';
+      setCelebrate({
+        pose: 'excited',
+        title: name ? `All done, ${name}!` : 'All done!',
+        subtitle: 'Way to go — you crushed today.',
+      });
+    }
+    lastDoneCountRef.current = doneCount;
+  }, [items, assignments, session?.user.id, profile?.displayName]);
+
   const submit = async (item: DisplayItem) => {
     setSubmitting(item.id);
     const minutes = activeFocusSession
@@ -130,7 +161,18 @@ export function AssignmentsSection() {
       p_minutes: minutes,
     });
     setSubmitting(null);
-    if (rpcErr) setError(rpcErr.message);
+    if (rpcErr) {
+      setError(rpcErr.message);
+      return;
+    }
+    const name = profile?.displayName ?? '';
+    const who = name ? `, ${name}` : '';
+    setCelebrate({
+      title: `Nice work${who}!`,
+      subtitle: activeFocusSession
+        ? `Submitted with 1.5× bonus — ${minutes} min if your parent approves.`
+        : `Submitted — ${minutes} min if your parent approves.`,
+    });
   };
 
   // Only students see this section
@@ -173,7 +215,10 @@ export function AssignmentsSection() {
         {error && <Text style={styles.errorText}>{error}</Text>}
 
         {items && items.length === 0 && (
-          <Text style={styles.empty}>No upcoming assignments in the next two weeks.</Text>
+          <View style={styles.emptyWrap}>
+            <Mascot pose="thinking" size="md" />
+            <Text style={styles.empty}>No upcoming assignments in the next two weeks.</Text>
+          </View>
         )}
 
         {items && items.length > 0 && (
@@ -193,6 +238,14 @@ export function AssignmentsSection() {
           </View>
         )}
       </View>
+
+      <Celebration
+        visible={celebrate !== null}
+        pose={celebrate?.pose ?? 'excited'}
+        title={celebrate?.title ?? ''}
+        subtitle={celebrate?.subtitle}
+        onDismiss={() => setCelebrate(null)}
+      />
     </>
   );
 }
@@ -383,6 +436,7 @@ const styles = StyleSheet.create({
   statusDone: { backgroundColor: colors.accentSoft, borderColor: colors.accentBorder },
   statusDoneText: { color: colors.accent, fontSize: 11, fontWeight: '700' },
 
-  empty: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginTop: 8 },
+  emptyWrap: { alignItems: 'center', gap: 8, marginVertical: 12 },
+  empty: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginTop: 8, textAlign: 'center' },
   errorText: { color: colors.danger, fontSize: 12, marginTop: 8 },
 });

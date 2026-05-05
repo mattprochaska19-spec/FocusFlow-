@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 
+import { Mascot } from '@/components/mascot';
 import { ScheduleEditor } from '@/components/schedule-editor';
 import { ScheduleGrid } from '@/components/schedule-grid';
 import { useAuth } from '@/lib/auth-context';
@@ -159,7 +160,7 @@ export function FamilyDashboard() {
 
       {children?.length === 0 && (
         <View style={styles.emptyCard}>
-          <Ionicons name="people-outline" size={28} color={colors.textMuted} />
+          <Mascot pose="encouraging" size="lg" />
           <Text style={styles.emptyTitle}>No kids linked yet</Text>
           <Text style={styles.emptyBody}>
             Share your family code (above) so your child can sign up and connect their device.

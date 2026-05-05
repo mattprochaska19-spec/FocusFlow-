@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Mascot } from '@/components/mascot';
 import { useAuth, type SignUpRole } from '@/lib/auth-context';
 import { FontAwesome } from '@expo/vector-icons';
 import { colors, radius, shadowSm, space } from '@/lib/theme';
@@ -151,9 +152,7 @@ export default function SignInScreen() {
         contentContainerStyle={[styles.content, { paddingTop: insets.top + 60 }]}
         keyboardShouldPersistTaps="handled">
         <View style={styles.brandWrap}>
-          <View style={styles.logoMark}>
-            <Text style={styles.logoChar}>F</Text>
-          </View>
+          <Mascot pose="excited" size="xl" />
           <Text style={styles.brand}>FocusFlow</Text>
           <Text style={styles.tagline}>Less scroll. More learn.</Text>
         </View>

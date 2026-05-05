@@ -1,36 +1,39 @@
 // Centralized design tokens for FocusFlow.
-// Glossy warm obsidian palette, brighter emerald accent, hairline borders.
+// Warm cream background + vibrant green accent — kid-friendly, optimistic,
+// pairs well with the black/white panda mascot.
 
 export const colors = {
-  // Warm obsidian — near-black with a hint of brown for that glossy fine-leather feel
-  bg: '#0B0A08',
-  surface: '#15140F',
-  surfaceAlt: '#1E1C16',
-  surfaceMuted: '#171510',
+  // Warm cream — like a notebook page, more inviting than pure white
+  bg: '#FFFAF0',
+  surface: '#FFFFFF',
+  surfaceAlt: '#FEF3E0',
+  surfaceMuted: '#FFF6E6',
 
-  // Hairlines — subtle lifts for separating rows on dark
-  border: '#2A2720',
-  borderSubtle: '#1F1D17',
-  divider: '#252319',
-  hairline: '#22201A',
+  // Soft tan hairlines — keep the engineered structure without going stark
+  border: '#EFE4CD',
+  borderSubtle: '#F4ECD9',
+  divider: '#F0E8D5',
+  hairline: '#EFE4CD',
 
-  // Warm off-white text — inverted from the previous near-black
-  textPrimary: '#F4F1EA',
-  textSecondary: '#A8A29A',
-  textMuted: '#6E6962',
-  textInverse: '#0B0A08',
+  // Warm near-black — preserves a touch of brown for cohesion with the cream
+  textPrimary: '#1F1A14',
+  textSecondary: '#5C544A',
+  textMuted: '#9F968A',
+  textInverse: '#FFFFFF',
 
-  // Brighter emerald — needs to pop on near-black, was too dim before
-  accent: '#5DD79A',
-  accentSoft: '#13261C',
-  accentBorder: '#1F5A3D',
+  // Vibrant kid-friendly green — high saturation pops against cream and gives
+  // the app a cheerful, optimistic feel without being neon
+  accent: '#22C55E',
+  accentSoft: '#DCFCE7',
+  accentBorder: '#86EFAC',
 
-  danger: '#E87568',
-  dangerSoft: '#2C1612',
-  dangerBorder: '#5C2A26',
+  // Warm coral — softer than red, friendlier in a kids' app
+  danger: '#EF6B5E',
+  dangerSoft: '#FEE2E2',
+  dangerBorder: '#FCA5A5',
 
-  neutral: '#1E1C16',
-  neutralBorder: '#2A2720',
+  neutral: '#FEF3E0',
+  neutralBorder: '#EFE4CD',
 };
 
 export const radius = {

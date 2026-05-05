@@ -73,6 +73,7 @@ export type Profile = {
   role: 'parent' | 'student';
   familyCode: string | null;
   parentId: string | null;
+  displayName: string | null;
 };
 
 export type AssignmentStatus = 'pending_review' | 'completed' | 'rejected';
@@ -340,7 +341,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       // Step 1: load own profile (role + parent_id determine where settings come from)
       const { data: profileRow } = await supabase
         .from('profiles')
-        .select('user_id, role, family_code, parent_id')
+        .select('user_id, role, family_code, parent_id, display_name')
         .eq('user_id', userId)
         .maybeSingle();
       if (cancelled) return;
@@ -351,6 +352,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
             role: profileRow.role as 'parent' | 'student',
             familyCode: profileRow.family_code ?? null,
             parentId: profileRow.parent_id ?? null,
+            displayName: profileRow.display_name ?? null,
           }
         : null;
       setProfile(myProfile);

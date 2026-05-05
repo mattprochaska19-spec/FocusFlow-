@@ -98,7 +98,7 @@ export default function RootLayout() {
       <ThemeProvider value={navTheme}>
         <FocusProvider>
           <AuthGate />
-          <StatusBar style="light" />
+          <StatusBar style="dark" />
         </FocusProvider>
       </ThemeProvider>
     </AuthProvider>
