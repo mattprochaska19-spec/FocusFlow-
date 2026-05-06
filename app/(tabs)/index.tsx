@@ -16,10 +16,9 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AssignmentsSection } from '@/components/assignments-section';
 import { BlockModal } from '@/components/block-modal';
-import { FocusSessionCard } from '@/components/focus-session-card';
-import { MascotWithSpeech } from '@/components/speech-bubble';
+import { Mascot, type MascotPose } from '@/components/mascot';
+import { SpeechBubble } from '@/components/speech-bubble';
 import { decideAccess, type AccessDecision } from '@/lib/access';
 import { checkVideoCached } from '@/lib/cache';
 import { useFocus, type AppId } from '@/lib/focus-context';
@@ -38,9 +37,11 @@ export default function HomeScreen() {
   const { state, setFocusMode, effectiveDailyLimitMinutes, profile } = useFocus();
 
   const greeting = useMemo(() => buildGreeting(profile), [profile?.displayName, profile?.role]);
+  // Pick a random non-disappointed pose once per app open. useMemo with [] makes
+  // it stable across re-renders but fresh on each cold start.
+  const mascotPose = useMemo(() => pickRandomPose(), []);
 
   const focusOn = state.focusModeEnabled;
-  const limitedActiveCount = focusOn ? state.limitedApps.filter((a) => a.enabled).length : 0;
   const eduMins = Math.floor(state.today.educationalSeconds / 60);
   const entMins = Math.floor(state.today.entertainmentSeconds / 60);
   const limit = effectiveDailyLimitMinutes;
@@ -56,35 +57,40 @@ export default function HomeScreen() {
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + space.lg, paddingBottom: 48 }]}
       keyboardShouldPersistTaps="handled">
-      <View style={styles.header}>
-        <View style={styles.logoMark}>
-          <Text style={styles.logoChar}>F</Text>
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.brand}>FocusFlow</Text>
-          <Text style={styles.brandSub}>Less scroll. More learn.</Text>
-        </View>
+      <View style={styles.topBar}>
+        <Text style={styles.brand}>Pandu</Text>
         <View style={[styles.statusDot, focusOn && styles.statusDotOn]} />
       </View>
 
-      <MascotWithSpeech
-        pose={greeting.pose}
-        text={greeting.text}
-        size="md"
-        containerStyle={{ marginBottom: 24 }}
-      />
+      {/* Mascot is the hero — big and centered, with the greeting bubble below */}
+      <View style={styles.mascotHero}>
+        <Mascot pose={mascotPose} size={220} />
+        <SpeechBubble text={greeting.text} tail="none" style={styles.mascotBubble} />
+      </View>
 
-      {/* Hero stat: today's entertainment usage */}
-      <View style={styles.hero}>
-        <Text style={styles.heroLabel}>Entertainment Today</Text>
-        <View style={styles.heroNumRow}>
-          <Text style={[styles.heroNum, overLimit && styles.heroNumDanger]}>{entMins}</Text>
-          <Text style={styles.heroNumUnit}>min</Text>
+      {/* Compact screen-time usage block */}
+      <View style={styles.usageCard}>
+        <View style={styles.usageHeader}>
+          <Text style={styles.usageLabel}>Entertainment Today</Text>
+          <View style={styles.focusToggle}>
+            <Text style={styles.focusToggleLabel}>Focus</Text>
+            <Switch
+              value={focusOn}
+              onValueChange={(v) => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setFocusMode(v);
+              }}
+              trackColor={{ false: colors.neutralBorder, true: colors.accent }}
+              thumbColor={colors.surface}
+              ios_backgroundColor={colors.neutralBorder}
+              style={{ transform: [{ scaleX: 0.75 }, { scaleY: 0.75 }] }}
+            />
+          </View>
         </View>
-        <Text style={styles.heroSub}>
-          {overLimit ? 'Daily limit reached' : `${remaining} left of ${limit} today`}
-        </Text>
-
+        <View style={styles.usageNumRow}>
+          <Text style={[styles.usageNum, overLimit && styles.heroNumDanger]}>{entMins}</Text>
+          <Text style={styles.usageNumUnit}>/ {limit} min</Text>
+        </View>
         <View style={styles.heroBarTrack}>
           <View
             style={[
@@ -94,40 +100,18 @@ export default function HomeScreen() {
             ]}
           />
         </View>
-
-        <View style={styles.heroFooter}>
-          <View style={styles.heroFooterStat}>
-            <Text style={styles.heroFooterValue}>{eduMins}m</Text>
-            <Text style={styles.heroFooterLabel}>Educational</Text>
-          </View>
-          <View style={styles.heroFooterDivider} />
-          <View style={styles.heroFooterStat}>
-            <Text style={styles.heroFooterValue}>{state.today.videoCount}</Text>
-            <Text style={styles.heroFooterLabel}>Videos</Text>
-          </View>
-          <View style={styles.heroFooterDivider} />
-          <View style={styles.heroFooterStat}>
-            <View style={styles.toggleRow}>
-              <Switch
-                value={focusOn}
-                onValueChange={(v) => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setFocusMode(v);
-                }}
-                trackColor={{ false: colors.neutralBorder, true: colors.accent }}
-                thumbColor={colors.surface}
-                ios_backgroundColor={colors.neutralBorder}
-                style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
-              />
-            </View>
-            <Text style={styles.heroFooterLabel}>Focus {focusOn ? 'on' : 'off'}</Text>
-          </View>
+        <View style={styles.usageFooter}>
+          <Text style={styles.usageFooterText}>
+            {overLimit ? 'Daily limit reached' : `${remaining} min left`}
+          </Text>
+          <Text style={styles.usageFooterDot}>·</Text>
+          <Text style={styles.usageFooterText}>{eduMins}m educational</Text>
+          <Text style={styles.usageFooterDot}>·</Text>
+          <Text style={styles.usageFooterText}>{state.today.videoCount} videos</Text>
         </View>
       </View>
 
-      <FocusSessionCard />
-
-      <Text style={styles.sectionLabel}>Limited Apps</Text>
+      <Text style={styles.sectionLabel}>App Limits</Text>
       <View style={styles.list}>
         {state.limitedApps.map((app, i) => {
           const isLimited = focusOn && app.enabled;
@@ -153,8 +137,6 @@ export default function HomeScreen() {
           </View>
         </View>
       </View>
-
-      <AssignmentsSection />
 
       <FilterTester />
     </ScrollView>
@@ -191,7 +173,16 @@ function AppRow({
 }
 
 function FilterTester() {
-  const { state, recordWatch, addOverride, completedAssignmentsToday, activeFocusSession, scheduleBlocks } = useFocus();
+  const {
+    state,
+    recordWatch,
+    addOverride,
+    completedAssignmentsToday,
+    activeFocusSession,
+    scheduleBlocks,
+    effectiveLockUntilAssignmentsComplete,
+    effectiveAssignmentLockThreshold,
+  } = useFocus();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<FilterResult | null>(null);
@@ -223,13 +214,20 @@ function FilterTester() {
   const markWatched = async () => {
     if (!result || !result.ok) return;
     const { video, classification } = result;
-    const decision = await decideAccess(video.id, state, completedAssignmentsToday, {
-      active: !!activeFocusSession,
-      remainingSeconds: activeFocusSession
-        ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
-        : 0,
-      anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
-    }, scheduleBlocks);
+    const decision = await decideAccess(
+      video.id,
+      state,
+      completedAssignmentsToday,
+      {
+        active: !!activeFocusSession,
+        remainingSeconds: activeFocusSession
+          ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
+          : 0,
+        anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
+      },
+      scheduleBlocks,
+      { enabled: effectiveLockUntilAssignmentsComplete, threshold: effectiveAssignmentLockThreshold },
+    );
     if (!decision.allowed) {
       setBlocked(decision);
       return;
@@ -346,6 +344,11 @@ function ResultCard({ result }: { result: FilterResult }) {
   );
 }
 
+const HOME_POSES: MascotPose[] = ['happy', 'excited', 'encouraging', 'thinking', 'meditating'];
+function pickRandomPose(): MascotPose {
+  return HOME_POSES[Math.floor(Math.random() * HOME_POSES.length)];
+}
+
 // Time-of-day + role aware greeting message + matching mascot pose.
 function buildGreeting(profile: { displayName: string | null; role: 'parent' | 'student' } | null) {
   const name = profile?.displayName ?? '';
@@ -379,88 +382,71 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   content: { paddingHorizontal: 24 },
 
-  header: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 36 },
-  logoMark: {
-    width: 36,
-    height: 36,
-    borderRadius: 9,
-    backgroundColor: colors.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  logoChar: { color: colors.textInverse, fontSize: 18, fontFamily: fonts.serifBlack, letterSpacing: -0.5 },
-  brand: { color: colors.textPrimary, fontSize: 22, fontFamily: fonts.serifBold, letterSpacing: -0.6 },
-  brandSub: { color: colors.textMuted, fontSize: 12, fontFamily: fonts.medium, marginTop: 2, fontStyle: 'italic' },
+  topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  brand: { color: colors.textPrimary, fontSize: 20, fontFamily: fonts.serifBold, letterSpacing: -0.5 },
   statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.textMuted },
   statusDotOn: { backgroundColor: colors.accent },
 
-  // Hero stat block — editorial layout, sits directly on the page
-  hero: {
-    marginBottom: 40,
-    paddingTop: 4,
+  // Mascot hero: dominant element on the page
+  mascotHero: { alignItems: 'center', marginTop: 8, marginBottom: 28 },
+  mascotBubble: { marginTop: -8, maxWidth: 320 },
+
+  // Compact usage card
+  usageCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 0.5,
+    borderColor: colors.hairline,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 24,
+    ...shadowSm,
   },
-  heroLabel: {
+  usageHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  usageLabel: {
     color: colors.textMuted,
-    fontSize: 11,
+    fontSize: 10,
     fontFamily: fonts.bold,
     textTransform: 'uppercase',
-    letterSpacing: 1.6,
-    marginBottom: 14,
+    letterSpacing: 1.4,
   },
-  heroNumRow: { flexDirection: 'row', alignItems: 'baseline', gap: 10 },
-  heroNum: {
+  focusToggle: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  focusToggleLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontFamily: fonts.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  usageNumRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginBottom: 10 },
+  usageNum: {
     color: colors.textPrimary,
-    fontSize: 96,
+    fontSize: 44,
     fontFamily: fonts.serifBlack,
-    letterSpacing: -4,
-    lineHeight: 96,
+    letterSpacing: -1.6,
+    lineHeight: 46,
     ...tabularNumbers,
   },
-  heroNumDanger: { color: colors.danger },
-  heroNumUnit: {
+  usageNumUnit: {
     color: colors.textMuted,
-    fontSize: 20,
-    fontFamily: fonts.serifSemibold,
-    letterSpacing: -0.3,
-    fontStyle: 'italic',
+    fontSize: 14,
+    fontFamily: fonts.medium,
   },
-  heroSub: { color: colors.textSecondary, fontSize: 13, fontFamily: fonts.medium, marginTop: 10, marginBottom: 26 },
+  heroNumDanger: { color: colors.danger },
 
   heroBarTrack: {
     height: 3,
     backgroundColor: colors.surfaceAlt,
     borderRadius: 999,
     overflow: 'hidden',
-    marginBottom: 22,
+    marginBottom: 10,
   },
   heroBarFill: { height: '100%', backgroundColor: colors.accent, borderRadius: 999 },
   heroBarFillDanger: { backgroundColor: colors.danger },
 
-  heroFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: 18,
-    borderTopWidth: 0.5,
-    borderTopColor: colors.hairline,
-  },
-  heroFooterStat: { flex: 1, alignItems: 'flex-start' },
-  heroFooterValue: {
-    color: colors.textPrimary,
-    fontSize: 22,
-    fontFamily: fonts.serifSemibold,
-    letterSpacing: -0.4,
-    ...tabularNumbers,
-  },
-  heroFooterLabel: {
-    color: colors.textMuted,
-    fontSize: 10,
-    fontFamily: fonts.semibold,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    marginTop: 4,
-  },
-  heroFooterDivider: { width: 0.5, height: 32, backgroundColor: colors.hairline, marginHorizontal: 4 },
-  toggleRow: { alignItems: 'flex-start', marginLeft: -6, marginBottom: 2 },
+  usageFooter: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
+  usageFooterText: { color: colors.textSecondary, fontSize: 11, fontFamily: fonts.medium },
+  usageFooterDot: { color: colors.textMuted, fontSize: 11, marginHorizontal: 6 },
 
   sectionLabel: {
     color: colors.textMuted,

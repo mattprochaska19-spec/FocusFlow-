@@ -58,12 +58,21 @@ export type FocusSessionContext = {
   anchorTitle?: string;
 };
 
+// Effective lock-until-assignments rule. When passed, overrides
+// state.lockUntilAssignmentsComplete + state.assignmentLockThreshold (which
+// represent the parent default). Used so per-child overrides take precedence.
+export type LockOverride = {
+  enabled: boolean;
+  threshold: number;
+};
+
 export async function decideAccess(
   videoId: string,
   state: FocusState,
   completedAssignmentsToday: number = 0,
   focusSession: FocusSessionContext = { active: false },
-  scheduleBlocks: ScheduleBlock[] = []
+  scheduleBlocks: ScheduleBlock[] = [],
+  lockOverride: LockOverride | null = null,
 ): Promise<AccessDecision> {
   if (!state.focusModeEnabled) {
     return { allowed: true, reason: 'focus_off' };
@@ -124,17 +133,17 @@ export async function decideAccess(
 
   // Lock entertainment behind assignment completion if the parent enabled it.
   // Educational content stays allowed (above); only entertainment is gated.
-  if (
-    state.lockUntilAssignmentsComplete &&
-    completedAssignmentsToday < state.assignmentLockThreshold
-  ) {
+  // Per-child override (lockOverride) wins over the parent default in state.
+  const lockEnabled = lockOverride?.enabled ?? state.lockUntilAssignmentsComplete;
+  const lockThreshold = lockOverride?.threshold ?? state.assignmentLockThreshold;
+  if (lockEnabled && completedAssignmentsToday < lockThreshold) {
     return {
       allowed: false,
       reason: 'assignments_required',
       classification,
       video,
       details: {
-        assignmentsRequired: state.assignmentLockThreshold,
+        assignmentsRequired: lockThreshold,
         assignmentsCompleted: completedAssignmentsToday,
       },
     };

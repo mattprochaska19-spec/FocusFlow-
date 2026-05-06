@@ -28,7 +28,7 @@ type DisplayItem = {
 // student claim "I'm done" on each. A claim creates a pending_review assignment
 // that the parent then approves to unlock earned minutes.
 export function AssignmentsSection() {
-  const { session, googleAccessToken } = useAuth();
+  const { session, googleAccessToken, getValidGoogleAccessToken, getClassroomAccessToken } = useAuth();
   const { profile, assignments, earnedMinutesToday, state, activeFocusSession } = useFocus();
   const [items, setItems] = useState<DisplayItem[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -37,6 +37,9 @@ export function AssignmentsSection() {
   const [celebrate, setCelebrate] = useState<{ title: string; subtitle?: string; pose?: 'excited' | 'happy' | 'encouraging' } | null>(null);
   const lastDoneCountRef = useRef<number | null>(null);
 
+  // Boolean gate for "is the user signed in with Google at all" — drives the
+  // empty-state copy. The actual token used for fetches is resolved fresh
+  // via getValidGoogleAccessToken to pick up auto-refreshes.
   const accessToken = googleAccessToken;
 
   // Index existing assignment claims by id for quick lookup. The googleEventId
@@ -50,11 +53,21 @@ export function AssignmentsSection() {
     if (!accessToken) return;
     setLoading(true);
     setError(null);
-    // Fetch both sources in parallel; either failing alone shouldn't blank
-    // the other. Aggregate the first error, if any, into the surfaced message.
+    // Calendar uses the primary signed-in account; Classroom uses the secondary
+    // school account if linked, falling back to the primary token. Both go
+    // through validating resolvers so a stale primary token gets refreshed
+    // transparently before the API call hits.
+    const [calendarToken, classroomToken] = await Promise.all([
+      getValidGoogleAccessToken(),
+      getClassroomAccessToken(),
+    ]);
     const [calRes, classRes] = await Promise.allSettled([
-      fetchUpcomingEvents(accessToken, { daysAhead: 14, maxResults: 30 }),
-      fetchClassroomAssignments(accessToken, { daysAhead: 14 }),
+      calendarToken
+        ? fetchUpcomingEvents(calendarToken, { daysAhead: 14, maxResults: 30 })
+        : Promise.resolve([]),
+      classroomToken
+        ? fetchClassroomAssignments(classroomToken, { daysAhead: 14 })
+        : Promise.resolve([]),
     ]);
 
     const out: DisplayItem[] = [];
@@ -112,7 +125,7 @@ export function AssignmentsSection() {
         isAllDay: item.isAllDay,
       }));
       syncMyUpcomingWork(syncItems).then((res) => {
-        if (res.error) console.warn('[FocusFlow] upcoming-work sync failed:', res.error);
+        if (res.error) console.warn('[Pandu] upcoming-work sync failed:', res.error);
       });
     }
   };
@@ -151,9 +164,12 @@ export function AssignmentsSection() {
 
   const submit = async (item: DisplayItem) => {
     setSubmitting(item.id);
+    // Parent can disable the earn-time reward globally; in that case minutes=0
+    // (the claim still flows through approval, just without minting time).
+    const baseMinutes = state.assignmentEarnEnabled ? state.minutesPerAssignment : 0;
     const minutes = activeFocusSession
-      ? Math.round(state.minutesPerAssignment * FOCUS_BONUS_MULTIPLIER)
-      : state.minutesPerAssignment;
+      ? Math.round(baseMinutes * FOCUS_BONUS_MULTIPLIER)
+      : baseMinutes;
     const { error: rpcErr } = await supabase.rpc('submit_assignment', {
       p_google_event_id: item.id,
       p_title: item.title,
@@ -200,9 +216,11 @@ export function AssignmentsSection() {
           <View style={{ flex: 1 }}>
             <Text style={styles.headerTitle}>Earn screen time</Text>
             <Text style={styles.headerSub}>
-              {earnedMinutesToday > 0
-                ? `+${earnedMinutesToday}m earned today`
-                : `Mark done → parent approves → +${state.minutesPerAssignment}m each`}
+              {!state.assignmentEarnEnabled
+                ? 'Mark done → parent approves'
+                : earnedMinutesToday > 0
+                  ? `+${earnedMinutesToday}m earned today`
+                  : `Mark done → parent approves → +${state.minutesPerAssignment}m each`}
             </Text>
           </View>
           <Pressable onPress={refresh} hitSlop={8} disabled={loading}>
@@ -291,7 +309,8 @@ function RowAction({
   submitting: boolean;
   onSubmit: () => void;
 }) {
-  const { activeFocusSession } = useFocus();
+  const { activeFocusSession, state } = useFocus();
+  const showFocusBonus = activeFocusSession && state.assignmentEarnEnabled;
 
   if (!claim) {
     return (
@@ -300,12 +319,12 @@ function RowAction({
         disabled={submitting}
         style={({ pressed }) => [
           styles.doneBtn,
-          activeFocusSession && styles.doneBtnFocusBonus,
+          showFocusBonus && styles.doneBtnFocusBonus,
           pressed && { opacity: 0.85 },
         ]}>
         {submitting
           ? <ActivityIndicator color={colors.textInverse} size="small" />
-          : <Text style={styles.doneBtnText}>{activeFocusSession ? "I'm done · 1.5×" : "I'm done"}</Text>}
+          : <Text style={styles.doneBtnText}>{showFocusBonus ? "I'm done · 1.5×" : "I'm done"}</Text>}
       </Pressable>
     );
   }

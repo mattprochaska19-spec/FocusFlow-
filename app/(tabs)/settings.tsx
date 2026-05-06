@@ -18,22 +18,20 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChannelSearch } from '@/components/channel-search';
+import { ClassroomLinkSection } from '@/components/classroom-link-section';
+import { CollapsibleSection } from '@/components/collapsible-section';
 import { decideAccess, describeDecision, type AccessDecision } from '@/lib/access';
 import { useAuth } from '@/lib/auth-context';
 import { useFocus } from '@/lib/focus-context';
 import { supabase } from '@/lib/supabase';
-import { colors, radius, shadowSm, space } from '@/lib/theme';
+import { colors, fonts, radius, shadowSm, space } from '@/lib/theme';
 import { extractVideoId, type ChannelSearchResult } from '@/lib/youtube-filter';
-
-const LIMIT_MIN_MINUTES = 1;
-const LIMIT_MAX_MINUTES = 180;
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const {
     state,
     setApiKey,
-    setDailyLimitMinutes,
     addOverride,
     addEducationalChannel,
     removeEducationalChannel,
@@ -44,14 +42,11 @@ export default function SettingsScreen() {
     setAllowFinishCurrentVideo,
     setAllowOverride,
     setMinutesPerAssignment,
-    setLockUntilAssignmentsComplete,
-    setAssignmentLockThreshold,
-    setBulkBonusMinutes,
-    setBulkBonusThreshold,
+    setAssignmentEarnEnabled,
     effectiveDailyLimitMinutes,
+    profile,
   } = useFocus();
 
-  const { profile } = useFocus();
   const isStudent = profile?.role === 'student';
 
   return (
@@ -69,20 +64,21 @@ export default function SettingsScreen() {
             : 'Tune the rules that keep you focused.'}
         </Text>
 
-        <FamilySection />
+        {/* Parent: Family Code at top of Settings (per redesign).
+            Student: link-to-parent form. */}
+        {isStudent ? <FamilySection /> : <ParentFamilyCode familyCode={profile?.familyCode ?? null} />}
+
+        {/* Students only: optional secondary Google account link for cases where
+            their school's Classroom uses a different account than the one they
+            signed up with. Hidden from parents. */}
+        {isStudent && (
+          <CollapsibleSection icon="school-outline" title="School Classroom Account">
+            <ClassroomLinkSection />
+          </CollapsibleSection>
+        )}
 
         {!isStudent && (
           <>
-            <ApiKeySection apiKey={state.apiKey} onChange={setApiKey} />
-
-            <TestAccessSection />
-
-            <DailyLimitSection
-              minutes={state.dailyLimitMinutes}
-              effective={effectiveDailyLimitMinutes}
-              onSet={setDailyLimitMinutes}
-            />
-
             <BehaviorSection
               allowFinishCurrentVideo={state.allowFinishCurrentVideo}
               allowOverride={state.allowOverride}
@@ -90,54 +86,63 @@ export default function SettingsScreen() {
               onSetAllowOverride={setAllowOverride}
             />
 
-            <EarnTimeSection
-              minutes={state.minutesPerAssignment}
-              onSet={setMinutesPerAssignment}
-            />
-
-            <AssignmentLockSection
-              enabled={state.lockUntilAssignmentsComplete}
-              threshold={state.assignmentLockThreshold}
-              onSetEnabled={setLockUntilAssignmentsComplete}
-              onSetThreshold={setAssignmentLockThreshold}
-            />
-
-            <BulkBonusSection
-              bonusMinutes={state.bulkBonusMinutes}
-              threshold={state.bulkBonusThreshold}
-              onSetBonus={setBulkBonusMinutes}
-              onSetThreshold={setBulkBonusThreshold}
-            />
+            <CollapsibleSection
+              icon="ribbon-outline"
+              title="Earn Time per Assignment"
+              badge={state.assignmentEarnEnabled ? undefined : 'Off'}>
+              <EarnTimeBody
+                minutes={state.minutesPerAssignment}
+                enabled={state.assignmentEarnEnabled}
+                onSet={setMinutesPerAssignment}
+                onSetEnabled={setAssignmentEarnEnabled}
+              />
+            </CollapsibleSection>
 
             {state.allowOverride && (
-              <OverrideSection
-                override={state.override}
-                dailyLimit={state.dailyLimitMinutes}
-                effective={effectiveDailyLimitMinutes}
-                onAdd={addOverride}
-              />
+              <CollapsibleSection icon="add-circle-outline" title="Override (today only)">
+                <OverrideBody
+                  override={state.override}
+                  dailyLimit={state.dailyLimitMinutes}
+                  effective={effectiveDailyLimitMinutes}
+                  onAdd={addOverride}
+                />
+              </CollapsibleSection>
             )}
 
-            <EducationalChannelsSection
-              channels={state.educationalChannels}
-              apiKey={state.apiKey}
-              onAdd={addEducationalChannel}
-              onRemove={removeEducationalChannel}
-            />
+            <CollapsibleSection icon="checkmark-done-circle-outline" title="Test Access">
+              <TestAccessSection />
+            </CollapsibleSection>
 
-            <CreatorAllowancesSection
-              allowances={state.creatorAllowances}
-              apiKey={state.apiKey}
-              onAdd={addCreatorAllowance}
-              onRemove={removeCreatorAllowance}
-            />
+            <CollapsibleSection icon="key-outline" title="YouTube Data API Key">
+              <ApiKeyBody apiKey={state.apiKey} onChange={setApiKey} />
+            </CollapsibleSection>
 
-            <ChannelLimitsSection
-              limits={state.channelLimits}
-              apiKey={state.apiKey}
-              onSet={setChannelLimit}
-              onRemove={removeChannelLimit}
-            />
+            <CollapsibleSection icon="checkmark-circle-outline" title="Educational Channels" badge={state.educationalChannels.length || undefined}>
+              <EducationalChannelsBody
+                channels={state.educationalChannels}
+                apiKey={state.apiKey}
+                onAdd={addEducationalChannel}
+                onRemove={removeEducationalChannel}
+              />
+            </CollapsibleSection>
+
+            <CollapsibleSection icon="film-outline" title="Creator Allowances" badge={state.creatorAllowances.length || undefined}>
+              <CreatorAllowancesBody
+                allowances={state.creatorAllowances}
+                apiKey={state.apiKey}
+                onAdd={addCreatorAllowance}
+                onRemove={removeCreatorAllowance}
+              />
+            </CollapsibleSection>
+
+            <CollapsibleSection icon="tv-outline" title="Per-Channel Limits" badge={Object.keys(state.channelLimits).length || undefined}>
+              <ChannelLimitsBody
+                limits={state.channelLimits}
+                apiKey={state.apiKey}
+                onSet={setChannelLimit}
+                onRemove={removeChannelLimit}
+              />
+            </CollapsibleSection>
           </>
         )}
 
@@ -239,7 +244,7 @@ function AccountSection() {
   const confirmDelete = () => {
     const message = isParent
       ? "This permanently removes your account, settings, and all activity history. Linked children will be unlinked but their accounts won't be deleted. This can't be undone."
-      : "This permanently removes your account and all activity history. You'll need to sign up again with your parent's family code to use FocusFlow. This can't be undone.";
+      : "This permanently removes your account and all activity history. You'll need to sign up again with your parent's family code to use Pandu. This can't be undone.";
 
     Alert.alert(
       'Delete account?',
@@ -284,10 +289,10 @@ function AccountSection() {
   );
 }
 
-function ApiKeySection({ apiKey, onChange }: { apiKey: string; onChange: (k: string) => void }) {
+function ApiKeyBody({ apiKey, onChange }: { apiKey: string; onChange: (k: string) => void }) {
   const [reveal, setReveal] = useState(false);
   return (
-    <Card icon="key-outline" title="YouTube Data API Key">
+    <>
       <View style={styles.inputRow}>
         <TextInput
           value={apiKey}
@@ -306,209 +311,80 @@ function ApiKeySection({ apiKey, onChange }: { apiKey: string; onChange: (k: str
       <Text style={styles.hint}>
         Get a free key at console.cloud.google.com → enable YouTube Data API v3 → Credentials → Create API key.
       </Text>
-    </Card>
+    </>
   );
 }
 
-function DailyLimitSection({
+function EarnTimeBody({
   minutes,
-  effective,
+  enabled,
   onSet,
+  onSetEnabled,
 }: {
   minutes: number;
-  effective: number;
+  enabled: boolean;
   onSet: (m: number) => void;
-}) {
-  // Track value live during drag without thrashing AsyncStorage; commit on release
-  const [liveValue, setLiveValue] = useState(minutes);
-  useEffect(() => { setLiveValue(minutes); }, [minutes]);
-
-  return (
-    <Card icon="time-outline" title="Daily Entertainment Limit">
-      <View style={styles.sliderValueRow}>
-        <Text style={styles.sliderValue}>{liveValue}</Text>
-        <Text style={styles.sliderValueUnit}>min / day</Text>
-      </View>
-      <Slider
-        value={minutes}
-        minimumValue={LIMIT_MIN_MINUTES}
-        maximumValue={LIMIT_MAX_MINUTES}
-        step={1}
-        minimumTrackTintColor={colors.accent}
-        maximumTrackTintColor={colors.borderSubtle}
-        thumbTintColor={colors.accent}
-        onValueChange={(v) => setLiveValue(Math.round(v))}
-        onSlidingComplete={(v) => onSet(Math.round(v))}
-        style={styles.slider}
-      />
-      <View style={styles.sliderRange}>
-        <Text style={styles.sliderRangeText}>{LIMIT_MIN_MINUTES}m</Text>
-        <Text style={styles.sliderRangeText}>{LIMIT_MAX_MINUTES}m</Text>
-      </View>
-      <Text style={styles.hint}>
-        Cap on YouTube entertainment per day. Today's effective cap with overrides:{' '}
-        <Text style={styles.hintStrong}>{effective}m</Text>.
-      </Text>
-    </Card>
-  );
-}
-
-function EarnTimeSection({
-  minutes,
-  onSet,
-}: {
-  minutes: number;
-  onSet: (m: number) => void;
+  onSetEnabled: (v: boolean) => void;
 }) {
   const [live, setLive] = useState(minutes);
   useEffect(() => { setLive(minutes); }, [minutes]);
   return (
-    <Card icon="ribbon-outline" title="Earn Time per Assignment">
-      <View style={styles.sliderValueRow}>
-        <Text style={styles.sliderValue}>{live}</Text>
-        <Text style={styles.sliderValueUnit}>min / approved assignment</Text>
-      </View>
-      <Slider
-        value={minutes}
-        minimumValue={1}
-        maximumValue={120}
-        step={1}
-        minimumTrackTintColor={colors.accent}
-        maximumTrackTintColor={colors.borderSubtle}
-        thumbTintColor={colors.accent}
-        onValueChange={(v) => setLive(Math.round(v))}
-        onSlidingComplete={(v) => onSet(Math.round(v))}
-        style={styles.slider}
-      />
-      <View style={styles.sliderRange}>
-        <Text style={styles.sliderRangeText}>1m</Text>
-        <Text style={styles.sliderRangeText}>120m</Text>
-      </View>
-      <Text style={styles.hint}>
-        When a child marks an assignment done and you approve it, they earn this many minutes of
-        entertainment time on top of their daily limit.
-      </Text>
-    </Card>
-  );
-}
-
-function BulkBonusSection({
-  bonusMinutes,
-  threshold,
-  onSetBonus,
-  onSetThreshold,
-}: {
-  bonusMinutes: number;
-  threshold: number;
-  onSetBonus: (m: number) => void;
-  onSetThreshold: (n: number) => void;
-}) {
-  const [liveBonus, setLiveBonus] = useState(bonusMinutes);
-  const [liveThreshold, setLiveThreshold] = useState(threshold);
-  useEffect(() => { setLiveBonus(bonusMinutes); }, [bonusMinutes]);
-  useEffect(() => { setLiveThreshold(threshold); }, [threshold]);
-  return (
-    <Card icon="trophy-outline" title="Bulk Completion Bonus">
-      <Text style={styles.hint}>
-        One-time extra time when the child finishes a target number of assignments today, on top of
-        the per-assignment minutes.
-      </Text>
-
-      <Text style={[styles.label, { marginTop: 14 }]}>Bonus minutes</Text>
-      <View style={styles.sliderValueRow}>
-        <Text style={styles.sliderValue}>{liveBonus}</Text>
-        <Text style={styles.sliderValueUnit}>min</Text>
-      </View>
-      <Slider
-        value={bonusMinutes}
-        minimumValue={0}
-        maximumValue={240}
-        step={1}
-        minimumTrackTintColor={colors.accent}
-        maximumTrackTintColor={colors.borderSubtle}
-        thumbTintColor={colors.accent}
-        onValueChange={(v) => setLiveBonus(Math.round(v))}
-        onSlidingComplete={(v) => onSetBonus(Math.round(v))}
-        style={styles.slider}
-      />
-      <View style={styles.sliderRange}>
-        <Text style={styles.sliderRangeText}>off (0m)</Text>
-        <Text style={styles.sliderRangeText}>240m</Text>
-      </View>
-
-      <Text style={[styles.label, { marginTop: 18 }]}>Trigger after</Text>
-      <View style={styles.sliderValueRow}>
-        <Text style={styles.sliderValue}>{liveThreshold}</Text>
-        <Text style={styles.sliderValueUnit}>{liveThreshold === 1 ? 'assignment' : 'assignments'}</Text>
-      </View>
-      <Slider
-        value={threshold}
-        minimumValue={1}
-        maximumValue={10}
-        step={1}
-        minimumTrackTintColor={colors.accent}
-        maximumTrackTintColor={colors.borderSubtle}
-        thumbTintColor={colors.accent}
-        onValueChange={(v) => setLiveThreshold(Math.round(v))}
-        onSlidingComplete={(v) => onSetThreshold(Math.round(v))}
-        style={styles.slider}
-      />
-      <View style={styles.sliderRange}>
-        <Text style={styles.sliderRangeText}>1</Text>
-        <Text style={styles.sliderRangeText}>10</Text>
-      </View>
-    </Card>
-  );
-}
-
-function AssignmentLockSection({
-  enabled,
-  threshold,
-  onSetEnabled,
-  onSetThreshold,
-}: {
-  enabled: boolean;
-  threshold: number;
-  onSetEnabled: (v: boolean) => void;
-  onSetThreshold: (n: number) => void;
-}) {
-  const [live, setLive] = useState(threshold);
-  useEffect(() => { setLive(threshold); }, [threshold]);
-  return (
-    <Card icon="lock-closed-outline" title="Lock Until Assignments Complete">
+    <>
       <ToggleRow
-        label="Block entertainment until done"
-        description="Educational content stays unlocked. Entertainment YouTube and limited apps stay blocked until the threshold below is met."
+        label="Reward minutes for assignments"
+        description="Off = approving an assignment doesn't grant any extra screen time."
         value={enabled}
         onValueChange={onSetEnabled}
       />
       {enabled && (
         <>
           <View style={styles.toggleDivider} />
-          <Text style={styles.label}>Approved assignments required</Text>
           <View style={styles.sliderValueRow}>
             <Text style={styles.sliderValue}>{live}</Text>
-            <Text style={styles.sliderValueUnit}>{live === 1 ? 'assignment' : 'assignments'}</Text>
+            <Text style={styles.sliderValueUnit}>min / approved assignment</Text>
           </View>
           <Slider
-            value={threshold}
+            value={minutes}
             minimumValue={1}
-            maximumValue={10}
+            maximumValue={120}
             step={1}
             minimumTrackTintColor={colors.accent}
             maximumTrackTintColor={colors.borderSubtle}
             thumbTintColor={colors.accent}
             onValueChange={(v) => setLive(Math.round(v))}
-            onSlidingComplete={(v) => onSetThreshold(Math.round(v))}
+            onSlidingComplete={(v) => onSet(Math.round(v))}
             style={styles.slider}
           />
           <View style={styles.sliderRange}>
-            <Text style={styles.sliderRangeText}>1</Text>
-            <Text style={styles.sliderRangeText}>10</Text>
+            <Text style={styles.sliderRangeText}>1m</Text>
+            <Text style={styles.sliderRangeText}>120m</Text>
           </View>
+          <Text style={styles.hint}>
+            When a child marks an assignment done and you approve it, they earn this many minutes of
+            entertainment time on top of their daily limit.
+          </Text>
         </>
       )}
-    </Card>
+    </>
+  );
+}
+
+function ParentFamilyCode({ familyCode }: { familyCode: string | null }) {
+  return (
+    <View style={styles.familyCodeCard}>
+      <View style={styles.familyCodeHeader}>
+        <View style={styles.familyCodeIconWrap}>
+          <Ionicons name="key-outline" size={14} color={colors.accent} />
+        </View>
+        <Text style={styles.familyCodeLabel}>Family Code</Text>
+      </View>
+      <Text style={styles.familyCodeBig} selectable>
+        {familyCode ?? '— —'}
+      </Text>
+      <Text style={styles.familyCodeHintCopy}>
+        Tap and hold to copy. Share with your child during sign-up to link their device.
+      </Text>
+    </View>
   );
 }
 
@@ -570,7 +446,7 @@ function ToggleRow({
   );
 }
 
-function OverrideSection({
+function OverrideBody({
   override,
   dailyLimit,
   effective,
@@ -583,7 +459,7 @@ function OverrideSection({
 }) {
   const added = override?.minutesAdded ?? 0;
   return (
-    <Card icon="add-circle-outline" title="Override (today only)">
+    <>
       <View style={styles.presetRow}>
         {[5, 15, 30].map((m) => (
           <Pressable
@@ -599,11 +475,11 @@ function OverrideSection({
           ? `Added ${added}m to today's limit (${dailyLimit}m → ${effective}m). Resets at midnight.`
           : "Stretch today's entertainment cap. Resets at midnight."}
       </Text>
-    </Card>
+    </>
   );
 }
 
-function EducationalChannelsSection({
+function EducationalChannelsBody({
   channels,
   apiKey,
   onAdd,
@@ -619,7 +495,7 @@ function EducationalChannelsSection({
   };
 
   return (
-    <Card icon="checkmark-circle-outline" title="Educational Channels">
+    <>
       {channels.length === 0 ? (
         <Text style={[styles.empty, { marginBottom: 14 }]}>No channels added yet.</Text>
       ) : (
@@ -644,11 +520,11 @@ function EducationalChannelsSection({
       <Text style={styles.hint}>
         Search a channel by name, tap to add. Whitelisted channels bypass all limits regardless of category.
       </Text>
-    </Card>
+    </>
   );
 }
 
-function CreatorAllowancesSection({
+function CreatorAllowancesBody({
   allowances,
   apiKey,
   onAdd,
@@ -676,7 +552,7 @@ function CreatorAllowancesSection({
   };
 
   return (
-    <Card icon="film-outline" title="Creator Allowances">
+    <>
       {allowances.length === 0 ? (
         <Text style={styles.empty}>No creators added yet.</Text>
       ) : (
@@ -741,7 +617,7 @@ function CreatorAllowancesSection({
       <Text style={styles.hint}>
         Search a creator by name, pick from the suggestions, then set the daily video limit.
       </Text>
-    </Card>
+    </>
   );
 }
 
@@ -754,7 +630,7 @@ function ChannelAvatar({ uri }: { uri?: string }) {
   );
 }
 
-function ChannelLimitsSection({
+function ChannelLimitsBody({
   limits,
   apiKey,
   onSet,
@@ -780,7 +656,7 @@ function ChannelLimitsSection({
   };
 
   return (
-    <Card icon="tv-outline" title="Per-Channel Limits">
+    <>
       {entries.length === 0 ? (
         <Text style={styles.empty}>No per-channel limits set.</Text>
       ) : (
@@ -841,12 +717,19 @@ function ChannelLimitsSection({
       )}
 
       <Text style={styles.hint}>Optional per-channel time cap, separate from the global daily limit.</Text>
-    </Card>
+    </>
   );
 }
 
 function TestAccessSection() {
-  const { state, completedAssignmentsToday, activeFocusSession, scheduleBlocks } = useFocus();
+  const {
+    state,
+    completedAssignmentsToday,
+    activeFocusSession,
+    scheduleBlocks,
+    effectiveLockUntilAssignmentsComplete,
+    effectiveAssignmentLockThreshold,
+  } = useFocus();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [decision, setDecision] = useState<AccessDecision | null>(null);
@@ -861,13 +744,20 @@ function TestAccessSection() {
       return;
     }
     setLoading(true);
-    const d = await decideAccess(id, state, completedAssignmentsToday, {
-      active: !!activeFocusSession,
-      remainingSeconds: activeFocusSession
-        ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
-        : 0,
-      anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
-    }, scheduleBlocks);
+    const d = await decideAccess(
+      id,
+      state,
+      completedAssignmentsToday,
+      {
+        active: !!activeFocusSession,
+        remainingSeconds: activeFocusSession
+          ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
+          : 0,
+        anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
+      },
+      scheduleBlocks,
+      { enabled: effectiveLockUntilAssignmentsComplete, threshold: effectiveAssignmentLockThreshold },
+    );
     setLoading(false);
     setDecision(d);
   };
@@ -877,7 +767,7 @@ function TestAccessSection() {
   const isFocusOff = decision?.reason === 'focus_off';
 
   return (
-    <Card icon="checkmark-done-circle-outline" title="Test Access">
+    <>
       <Text style={styles.testHint}>
         Paste a YouTube URL to see what the filter would do right now, given Focus Mode and your current limits.
       </Text>
@@ -943,7 +833,7 @@ function TestAccessSection() {
           <Text style={styles.decisionReason}>{desc.detail}</Text>
         </View>
       )}
-    </Card>
+    </>
   );
 }
 
@@ -1151,6 +1041,46 @@ const styles = StyleSheet.create({
   decisionChannel: { color: colors.textSecondary, fontSize: 13, marginBottom: 8 },
   decisionReason: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
 
+  familyCodeCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: space.lg,
+    marginBottom: space.lg,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    ...shadowSm,
+  },
+  familyCodeHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  familyCodeIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    backgroundColor: colors.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  familyCodeLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontFamily: fonts.bold,
+    letterSpacing: 1.6,
+    textTransform: 'uppercase',
+  },
+  familyCodeBig: {
+    color: colors.textPrimary,
+    fontSize: 32,
+    fontFamily: fonts.serifBlack,
+    letterSpacing: 6,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'center',
+    paddingVertical: 14,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.md,
+    borderWidth: 0.5,
+    borderColor: colors.hairline,
+    marginBottom: 10,
+  },
+  familyCodeHintCopy: { color: colors.textMuted, fontSize: 11, lineHeight: 16, textAlign: 'center' },
   familyHint: { color: colors.textSecondary, fontSize: 13, marginBottom: 10, lineHeight: 18 },
   familyCodeBox: {
     flexDirection: 'row',

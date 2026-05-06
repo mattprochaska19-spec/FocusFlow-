@@ -122,7 +122,7 @@ export async function fetchChildSchedule(childUserId: string): Promise<ScheduleB
     .order('start_minutes', { ascending: true });
 
   if (error) {
-    console.warn('[FocusFlow] fetchChildSchedule failed:', error.message);
+    console.warn('[Pandu] fetchChildSchedule failed:', error.message);
     return [];
   }
   return (data as Row[] ?? []).map(fromRow);

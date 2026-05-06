@@ -1,6 +1,6 @@
 import { Image, type ImageStyle, type StyleProp } from 'react-native';
 
-// FocusFlow's mascot. Six poses cover the emotional range we surface in UI:
+// Pandu's mascot. Six poses cover the emotional range we surface in UI:
 //   happy        — attentive idle, paws clasped, gentle smile
 //   excited      — arms-up celebration (focus complete, +Xm earned)
 //   encouraging  — wink + thumbs-up + heart (positive reinforcement)

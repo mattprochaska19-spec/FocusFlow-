@@ -4,7 +4,26 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { AppState } from 'react-native';
 
 import { useAuth } from './auth-context';
+import {
+  fetchChildOverrides,
+  upsertChildOverride,
+  type ChildOverride,
+} from './child-overrides';
 import { getMySubmissionState } from './classroom';
+import {
+  approveQuestClaim,
+  archiveQuest as archiveQuestRpc,
+  claimQuest as claimQuestRpc,
+  createQuest as createQuestRpc,
+  fetchQuestClaims,
+  fetchQuests,
+  rejectQuestClaim,
+  setQuestTargets,
+  updateQuest as updateQuestRpc,
+  type ParentQuest,
+  type QuestClaim,
+  type QuestKind,
+} from './quests';
 import { fetchChildSchedule, type ScheduleBlock } from './schedule';
 import { supabase } from './supabase';
 import { DEFAULT_EDU_KEYWORDS, DEFAULT_ENT_KEYWORDS } from './youtube-filter';
@@ -68,6 +87,9 @@ export type RemoteFocusSession = ActiveFocusSession & {
 
 export const FOCUS_BONUS_MULTIPLIER = 1.5;
 
+export type { ParentQuest, QuestClaim, QuestKind } from './quests';
+export type { ChildOverride } from './child-overrides';
+
 export type Profile = {
   userId: string;
   role: 'parent' | 'student';
@@ -105,10 +127,12 @@ export type FocusState = {
   allowFinishCurrentVideo: boolean;
   allowOverride: boolean;
   minutesPerAssignment: number;
+  // When false, completing assignments earns 0 minutes regardless of the
+  // per-assignment slider. Parent toggle for families that don't want a
+  // tit-for-tat reward economy.
+  assignmentEarnEnabled: boolean;
   lockUntilAssignmentsComplete: boolean;
   assignmentLockThreshold: number;
-  bulkBonusMinutes: number;
-  bulkBonusThreshold: number;
 };
 
 const DEFAULT_LIMITED_APPS: LimitedApp[] = [
@@ -158,13 +182,12 @@ const DEFAULT_STATE: FocusState = {
   allowFinishCurrentVideo: true,
   allowOverride: true,
   minutesPerAssignment: 15,
+  assignmentEarnEnabled: true,
   lockUntilAssignmentsComplete: false,
   assignmentLockThreshold: 1,
-  bulkBonusMinutes: 0,
-  bulkBonusThreshold: 3,
 };
 
-const STORAGE_KEY = 'focusflow_state_v1';
+const STORAGE_KEY = 'pandu_state_v1';
 
 export type RecordWatchInput = {
   seconds: number;
@@ -178,10 +201,15 @@ export type RecordWatchInput = {
 type FocusContextValue = {
   state: FocusState;
   hydrated: boolean;
+  // True once the Supabase profile fetch has completed (success or null).
+  // AuthGate uses this to distinguish "still loading" from "no profile yet,
+  // user needs to finish setup".
+  profileLoaded: boolean;
   profile: Profile | null;
   assignments: Assignment[];
   earnedMinutesToday: number;
   setMinutesPerAssignment: (minutes: number) => void;
+  setAssignmentEarnEnabled: (enabled: boolean) => void;
   setFocusMode: (enabled: boolean) => void;
   toggleApp: (id: AppId) => void;
   updateApp: (id: AppId, patch: Partial<Omit<LimitedApp, 'id'>>) => void;
@@ -199,8 +227,37 @@ type FocusContextValue = {
   setAllowOverride: (allow: boolean) => void;
   setLockUntilAssignmentsComplete: (v: boolean) => void;
   setAssignmentLockThreshold: (n: number) => void;
-  setBulkBonusMinutes: (m: number) => void;
-  setBulkBonusThreshold: (n: number) => void;
+  // Quests (parent creates / kid claims / parent reviews)
+  quests: ParentQuest[];
+  questClaims: QuestClaim[];
+  createQuest: (input: {
+    kind: QuestKind;
+    title: string;
+    description?: string | null;
+    rewardMinutes: number;
+    repeatable: boolean;
+    targetChildIds: string[];
+  }) => Promise<{ id?: string; error?: string }>;
+  updateQuest: (
+    id: string,
+    patch: { title?: string; description?: string | null; rewardMinutes?: number; repeatable?: boolean },
+  ) => Promise<{ error?: string }>;
+  setQuestTargets: (id: string, targetChildIds: string[]) => Promise<{ error?: string }>;
+  archiveQuest: (id: string) => Promise<{ error?: string }>;
+  claimQuest: (id: string) => Promise<{ id?: string; error?: string }>;
+  approveQuestClaim: (claimId: string) => Promise<{ error?: string }>;
+  rejectQuestClaim: (claimId: string, note?: string) => Promise<{ error?: string }>;
+  // Child overrides (parent sets per-child rule overrides; kid reads own)
+  childOverrides: ChildOverride[];
+  setChildOverride: (input: {
+    childUserId: string;
+    dailyLimitMinutes: number | null;
+    lockUntilAssignmentsComplete: boolean | null;
+    assignmentLockThreshold: number | null;
+  }) => Promise<{ error?: string }>;
+  // Effective rule values for the current user (resolves child override → parent default)
+  effectiveLockUntilAssignmentsComplete: boolean;
+  effectiveAssignmentLockThreshold: number;
   activeFocusSession: ActiveFocusSession | null;
   startFocusSession: (opts: {
     durationMinutes: number;
@@ -231,8 +288,11 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const [selfFocusSession, setSelfFocusSession] = useState<ActiveFocusSession | null>(null);
   const [remoteFocusSession, setRemoteFocusSession] = useState<RemoteFocusSession | null>(null);
   const [scheduleBlocks, setScheduleBlocks] = useState<ScheduleBlock[]>([]);
+  const [quests, setQuests] = useState<ParentQuest[]>([]);
+  const [questClaims, setQuestClaims] = useState<QuestClaim[]>([]);
+  const [childOverrides, setChildOverridesState] = useState<ChildOverride[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
-  const { session, googleAccessToken } = useAuth();
+  const { session, googleAccessToken, getClassroomAccessToken } = useAuth();
 
   // Hashes of last cloud-known settings/today blobs, to prevent realtime echo
   // loops (a write triggers a realtime event that would otherwise re-write).
@@ -413,7 +473,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
         .from('user_settings')
         .upsert({ user_id: session.user.id, data: settings }, { onConflict: 'user_id' })
         .then(({ error }) => {
-          if (error) console.warn('[FocusFlow] settings upsert failed:', error.message);
+          if (error) console.warn('[Pandu] settings upsert failed:', error.message);
         });
     }, 1000);
     return () => clearTimeout(handle);
@@ -434,7 +494,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
           { onConflict: 'user_id,date' }
         )
         .then(({ error }) => {
-          if (error) console.warn('[FocusFlow] daily_stats upsert failed:', error.message);
+          if (error) console.warn('[Pandu] daily_stats upsert failed:', error.message);
         });
     }, 2000);
     return () => clearTimeout(handle);
@@ -459,6 +519,37 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [session?.user.id]);
+
+  // ─── Quests + claims: load on auth, subscribe via realtime ────────────────
+  useEffect(() => {
+    if (!session) {
+      setQuests([]);
+      setQuestClaims([]);
+      return;
+    }
+    refreshQuests();
+    const channel = supabase
+      .channel('quests-watch')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parent_quests' }, () => refreshQuests())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parent_quest_targets' }, () => refreshQuests())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parent_quest_claims' }, () => refreshQuests())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [session?.user.id, refreshQuests]);
+
+  // ─── Child overrides: load on auth, subscribe via realtime ────────────────
+  useEffect(() => {
+    if (!session) {
+      setChildOverridesState([]);
+      return;
+    }
+    refreshOverrides();
+    const channel = supabase
+      .channel('child-overrides-watch')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'child_overrides' }, () => refreshOverrides())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [session?.user.id, refreshOverrides]);
 
   // ─── Supabase realtime: settings sync across devices ──────────────────────
   // Subscribes to whoever owns the rules: own row for parents, parent's row for students.
@@ -649,37 +740,70 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     ).length;
   }, [assignments, session?.user.id]);
 
-  // Sum minutes earned by completing assignments today, plus the one-time
-  // bulk bonus when the threshold is hit.
+  // Sum minutes earned today: per-assignment approvals + approved quest claims.
   const earnedMinutesToday = useMemo(() => {
     if (!session) return 0;
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    const todayApproved = assignments.filter(
-      (a) =>
-        a.studentUserId === session.user.id &&
-        a.status === 'completed' &&
-        a.completedAt &&
-        new Date(a.completedAt) >= start
-    );
-    const perAssignment = todayApproved.reduce((sum, a) => sum + a.minutesEarned, 0);
-    const bulk =
-      state.bulkBonusMinutes > 0 && todayApproved.length >= state.bulkBonusThreshold
-        ? state.bulkBonusMinutes
-        : 0;
-    return perAssignment + bulk;
-  }, [assignments, session?.user.id, state.bulkBonusMinutes, state.bulkBonusThreshold]);
+    const fromAssignments = assignments
+      .filter(
+        (a) =>
+          a.studentUserId === session.user.id &&
+          a.status === 'completed' &&
+          a.completedAt &&
+          new Date(a.completedAt) >= start,
+      )
+      .reduce((sum, a) => sum + a.minutesEarned, 0);
+    const fromQuests = questClaims
+      .filter(
+        (c) =>
+          c.childUserId === session.user.id &&
+          c.status === 'completed' &&
+          c.reviewedAt &&
+          new Date(c.reviewedAt) >= start,
+      )
+      .reduce((sum, c) => sum + c.minutesEarned, 0);
+    return fromAssignments + fromQuests;
+  }, [assignments, questClaims, session?.user.id]);
 
+  // Resolve the current user's child override (kids only — parents have no row).
+  const myOverride = useMemo<ChildOverride | null>(() => {
+    if (!session || profile?.role !== 'student') return null;
+    return childOverrides.find((o) => o.childUserId === session.user.id) ?? null;
+  }, [childOverrides, session?.user.id, profile?.role]);
+
+  // Effective daily limit = (childOverride ?? parentDefault) + override + earned
   const effectiveDailyLimitMinutes = useMemo(() => {
+    const baseLimit = myOverride?.dailyLimitMinutes ?? state.dailyLimitMinutes;
     const overrideMinutes =
       state.allowOverride && state.override && state.override.expiresAt > Date.now()
         ? state.override.minutesAdded
         : 0;
-    return state.dailyLimitMinutes + overrideMinutes + earnedMinutesToday;
-  }, [state.dailyLimitMinutes, state.override, state.allowOverride, earnedMinutesToday]);
+    return baseLimit + overrideMinutes + earnedMinutesToday;
+  }, [
+    state.dailyLimitMinutes,
+    state.override,
+    state.allowOverride,
+    earnedMinutesToday,
+    myOverride?.dailyLimitMinutes,
+  ]);
+
+  const effectiveLockUntilAssignmentsComplete = useMemo(
+    () => myOverride?.lockUntilAssignmentsComplete ?? state.lockUntilAssignmentsComplete,
+    [myOverride?.lockUntilAssignmentsComplete, state.lockUntilAssignmentsComplete],
+  );
+
+  const effectiveAssignmentLockThreshold = useMemo(
+    () => myOverride?.assignmentLockThreshold ?? state.assignmentLockThreshold,
+    [myOverride?.assignmentLockThreshold, state.assignmentLockThreshold],
+  );
 
   const setMinutesPerAssignment = useCallback((minutes: number) => {
     setState((s) => ({ ...s, minutesPerAssignment: Math.max(1, minutes) }));
+  }, []);
+
+  const setAssignmentEarnEnabled = useCallback((enabled: boolean) => {
+    setState((s) => ({ ...s, assignmentEarnEnabled: enabled }));
   }, []);
 
   const setLockUntilAssignmentsComplete = useCallback((v: boolean) => {
@@ -690,13 +814,104 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     setState((s) => ({ ...s, assignmentLockThreshold: Math.max(1, Math.round(n)) }));
   }, []);
 
-  const setBulkBonusMinutes = useCallback((m: number) => {
-    setState((s) => ({ ...s, bulkBonusMinutes: Math.max(0, Math.round(m)) }));
+  // ─── Quests + child overrides: setters ────────────────────────────────────
+  const refreshQuests = useCallback(async () => {
+    const [q, c] = await Promise.all([fetchQuests(), fetchQuestClaims()]);
+    if (!q.error) setQuests(q.quests);
+    if (!c.error) setQuestClaims(c.claims);
   }, []);
 
-  const setBulkBonusThreshold = useCallback((n: number) => {
-    setState((s) => ({ ...s, bulkBonusThreshold: Math.max(1, Math.round(n)) }));
+  const refreshOverrides = useCallback(async () => {
+    const r = await fetchChildOverrides();
+    if (!r.error) setChildOverridesState(r.overrides);
   }, []);
+
+  const handleCreateQuest = useCallback(
+    async (input: {
+      kind: QuestKind;
+      title: string;
+      description?: string | null;
+      rewardMinutes: number;
+      repeatable: boolean;
+      targetChildIds: string[];
+    }) => {
+      const r = await createQuestRpc(input);
+      if (!r.error) refreshQuests();
+      return r;
+    },
+    [refreshQuests],
+  );
+
+  const handleUpdateQuest = useCallback(
+    async (
+      id: string,
+      patch: { title?: string; description?: string | null; rewardMinutes?: number; repeatable?: boolean },
+    ) => {
+      const r = await updateQuestRpc(id, patch);
+      if (!r.error) refreshQuests();
+      return r;
+    },
+    [refreshQuests],
+  );
+
+  const handleSetQuestTargets = useCallback(
+    async (id: string, targetChildIds: string[]) => {
+      const r = await setQuestTargets(id, targetChildIds);
+      if (!r.error) refreshQuests();
+      return r;
+    },
+    [refreshQuests],
+  );
+
+  const handleArchiveQuest = useCallback(
+    async (id: string) => {
+      const r = await archiveQuestRpc(id);
+      if (!r.error) refreshQuests();
+      return r;
+    },
+    [refreshQuests],
+  );
+
+  const handleClaimQuest = useCallback(
+    async (id: string) => {
+      const r = await claimQuestRpc(id);
+      if (!r.error) refreshQuests();
+      return r;
+    },
+    [refreshQuests],
+  );
+
+  const handleApproveQuestClaim = useCallback(
+    async (claimId: string) => {
+      const r = await approveQuestClaim(claimId);
+      if (!r.error) refreshQuests();
+      return r;
+    },
+    [refreshQuests],
+  );
+
+  const handleRejectQuestClaim = useCallback(
+    async (claimId: string, note?: string) => {
+      const r = await rejectQuestClaim(claimId, note);
+      if (!r.error) refreshQuests();
+      return r;
+    },
+    [refreshQuests],
+  );
+
+  const handleSetChildOverride = useCallback(
+    async (input: {
+      childUserId: string;
+      dailyLimitMinutes: number | null;
+      lockUntilAssignmentsComplete: boolean | null;
+      assignmentLockThreshold: number | null;
+    }) => {
+      const r = await upsertChildOverride(input);
+      if (!r.error) refreshOverrides();
+      return r;
+    },
+    [refreshOverrides],
+  );
 
   const startFocusSession = useCallback(
     (opts: {
@@ -763,7 +978,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   // auto_complete_classroom_assignment (no parent approval — API is the
   // source of truth) and end the session. AppState 'active' triggers an
   // immediate poll so the kid sees auto-end within ~500ms of returning to
-  // FocusFlow after submitting in the Classroom app.
+  // Pandu after submitting in the Classroom app.
   useEffect(() => {
     const sess = selfFocusSession;
     if (!sess?.classroomCourseId || !sess?.classroomCourseWorkId) return;
@@ -775,8 +990,12 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     const poll = async () => {
       if (stopped) return;
       try {
+        // Use the school-linked token if connected (auto-refreshing if stale),
+        // otherwise fall back to the primary signed-in Google token.
+        const token = await getClassroomAccessToken();
+        if (!token) return;
         const subState = await getMySubmissionState(
-          googleAccessToken,
+          token,
           sess.classroomCourseId!,
           sess.classroomCourseWorkId!,
         );
@@ -790,7 +1009,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
           p_minutes: minutes,
         });
         if (error) {
-          console.warn('[FocusFlow] auto-complete failed:', error.message);
+          console.warn('[Pandu] auto-complete failed:', error.message);
           return; // retry on next poll
         }
         stopped = true;
@@ -801,7 +1020,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
           // Token expired mid-session — keep the session running on its timer,
           // just stop polling. Kid can re-auth after the session ends.
           stopped = true;
-          console.warn('[FocusFlow] Google token expired during focus session');
+          console.warn('[Pandu] Google token expired during focus session');
         }
       }
     };
@@ -932,6 +1151,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const value: FocusContextValue = {
     state,
     hydrated,
+    profileLoaded: cloudHydrated,
     profile,
     setFocusMode,
     toggleApp,
@@ -949,10 +1169,22 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     setAllowFinishCurrentVideo,
     setAllowOverride,
     setMinutesPerAssignment,
+    setAssignmentEarnEnabled,
     setLockUntilAssignmentsComplete,
     setAssignmentLockThreshold,
-    setBulkBonusMinutes,
-    setBulkBonusThreshold,
+    quests,
+    questClaims,
+    createQuest: handleCreateQuest,
+    updateQuest: handleUpdateQuest,
+    setQuestTargets: handleSetQuestTargets,
+    archiveQuest: handleArchiveQuest,
+    claimQuest: handleClaimQuest,
+    approveQuestClaim: handleApproveQuestClaim,
+    rejectQuestClaim: handleRejectQuestClaim,
+    childOverrides,
+    setChildOverride: handleSetChildOverride,
+    effectiveLockUntilAssignmentsComplete,
+    effectiveAssignmentLockThreshold,
     activeFocusSession,
     startFocusSession,
     endFocusSession,

@@ -22,7 +22,20 @@ const HEARTBEAT_SECONDS = 30;
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const { videoId } = useLocalSearchParams<{ videoId: string }>();
-  const { state, recordWatch, addOverride, completedAssignmentsToday, activeFocusSession, scheduleBlocks } = useFocus();
+  const {
+    state,
+    recordWatch,
+    addOverride,
+    completedAssignmentsToday,
+    activeFocusSession,
+    scheduleBlocks,
+    effectiveLockUntilAssignmentsComplete,
+    effectiveAssignmentLockThreshold,
+  } = useFocus();
+  const lockOverride = {
+    enabled: effectiveLockUntilAssignmentsComplete,
+    threshold: effectiveAssignmentLockThreshold,
+  };
 
   const [decision, setDecision] = useState<AccessDecision | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,13 +53,20 @@ export default function PlayerScreen() {
     if (!videoId) return;
     let cancelled = false;
     setLoading(true);
-    decideAccess(videoId, stateRef.current, completedAssignmentsToday, {
-      active: !!activeFocusSession,
-      remainingSeconds: activeFocusSession
-        ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
-        : 0,
-      anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
-    }, scheduleBlocks).then((d) => {
+    decideAccess(
+      videoId,
+      stateRef.current,
+      completedAssignmentsToday,
+      {
+        active: !!activeFocusSession,
+        remainingSeconds: activeFocusSession
+          ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
+          : 0,
+        anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
+      },
+      scheduleBlocks,
+      lockOverride,
+    ).then((d) => {
       if (cancelled) return;
       setDecision(d);
       setLoading(false);
@@ -76,13 +96,20 @@ export default function PlayerScreen() {
         channelTitle: video.channelTitle,
         categoryId: video.categoryId,
       });
-      const next = await decideAccess(video.id, stateRef.current, completedAssignmentsToday, {
-        active: !!activeFocusSession,
-        remainingSeconds: activeFocusSession
-          ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
-          : 0,
-        anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
-      }, scheduleBlocks);
+      const next = await decideAccess(
+        video.id,
+        stateRef.current,
+        completedAssignmentsToday,
+        {
+          active: !!activeFocusSession,
+          remainingSeconds: activeFocusSession
+            ? Math.max(0, Math.floor((activeFocusSession.endsAt - Date.now()) / 1000))
+            : 0,
+          anchorTitle: activeFocusSession?.anchorTitle ?? undefined,
+        },
+        scheduleBlocks,
+        lockOverride,
+      );
       if (!next.allowed && !stateRef.current.allowFinishCurrentVideo) {
         setPlaying(false);
         setBlocked(next);

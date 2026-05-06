@@ -40,11 +40,26 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="schedule"
+        options={{
+          title: 'Schedule',
+          tabBarIcon: ({ color, size }) => <Ionicons name="calendar-outline" size={size - 2} color={color} />,
+          href: isStudent ? '/schedule' : null,
+        }}
+      />
+      <Tabs.Screen
+        name="goals"
+        options={{
+          title: 'Goals',
+          tabBarIcon: ({ color, size }) => <Ionicons name="trophy-outline" size={size - 2} color={color} />,
+          href: isStudent ? '/goals' : null,
+        }}
+      />
+      <Tabs.Screen
         name="family"
         options={{
           title: 'Family',
           tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" size={size - 2} color={color} />,
-          // Parents only — students don't have linked children to view.
           href: isStudent ? null : '/family',
         }}
       />
@@ -53,6 +68,7 @@ export default function TabLayout() {
         options={{
           title: 'Activity',
           tabBarIcon: ({ color, size }) => <Ionicons name="stats-chart-outline" size={size - 2} color={color} />,
+          href: isStudent ? null : '/activity',
         }}
       />
       <Tabs.Screen

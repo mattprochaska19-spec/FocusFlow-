@@ -20,7 +20,7 @@ import { ActivityIndicator, View } from 'react-native';
 import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '@/lib/auth-context';
-import { FocusProvider } from '@/lib/focus-context';
+import { FocusProvider, useFocus } from '@/lib/focus-context';
 import { colors } from '@/lib/theme';
 
 export const unstable_settings = {
@@ -41,18 +41,34 @@ const navTheme = {
 
 function AuthGate() {
   const { session, loading } = useAuth();
+  const { profile, profileLoaded } = useFocus();
   const segments = useSegments();
   const router = useRouter();
 
   useEffect(() => {
     if (loading) return;
     const inAuthGroup = segments[0] === '(auth)';
+    const onSetupRole = inAuthGroup && segments[1] === 'setup-role';
+
+    // Not signed in → push to sign-in (unless already in auth group)
     if (!session && !inAuthGroup) {
       router.replace('/(auth)/sign-in');
-    } else if (session && inAuthGroup) {
+      return;
+    }
+
+    // Signed in but no profile yet — finish role setup before entering the app.
+    // We wait for profileLoaded to flip true so we don't bounce them while
+    // the profile fetch is still in flight.
+    if (session && profileLoaded && !profile && !onSetupRole) {
+      router.replace('/(auth)/setup-role');
+      return;
+    }
+
+    // Signed in with a profile, but stuck on an auth screen → drop into app.
+    if (session && profile && inAuthGroup) {
       router.replace('/');
     }
-  }, [loading, session, segments, router]);
+  }, [loading, session, profile, profileLoaded, segments, router]);
 
   if (loading) {
     return (

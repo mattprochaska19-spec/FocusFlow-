@@ -31,17 +31,25 @@ const DEFAULT_START = 9 * 60;  // 9:00 AM
 const DEFAULT_END = 15 * 60;   // 3:00 PM
 
 // Modal for creating or editing a schedule block. Create mode supports
-// multi-day batch (one row per selected day); edit mode is single-block.
+// multi-day × multi-kid batch (one row per selected day × selected kid);
+// edit mode is single-block (a single existing row).
 export function ScheduleEditor({
   visible,
   childUserId,
+  linkedChildren = [],
+  defaultTargetChildIds,
   block,
   defaultDay,
   onClose,
   onSaved,
 }: {
   visible: boolean;
+  // Owner for edit-mode (the existing block's child). For create mode, use
+  // linkedChildren + defaultTargetChildIds instead — `childUserId` is the
+  // fallback "viewing" kid only.
   childUserId: string;
+  linkedChildren?: { user_id: string; displayName: string }[];
+  defaultTargetChildIds?: string[];
   block: ScheduleBlock | null; // null = create new
   defaultDay?: number;
   onClose: () => void;
@@ -56,6 +64,7 @@ export function ScheduleEditor({
   const [mode, setMode] = useState<'block' | 'limit'>('block');
   const [limitMin, setLimitMin] = useState(15);
   const [label, setLabel] = useState('');
+  const [targetKids, setTargetKids] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +79,7 @@ export function ScheduleEditor({
       setMode(block.limitMinutes === null ? 'block' : 'limit');
       setLimitMin(block.limitMinutes ?? 15);
       setLabel(block.label ?? '');
+      setTargetKids([block.childUserId]);
     } else {
       setDays(defaultDay !== undefined ? [defaultDay] : []);
       setStartMin(DEFAULT_START);
@@ -78,10 +88,15 @@ export function ScheduleEditor({
       setMode('block');
       setLimitMin(15);
       setLabel('');
+      setTargetKids(defaultTargetChildIds ?? (childUserId ? [childUserId] : []));
     }
     setError(null);
     setSubmitting(false);
-  }, [visible, block?.id, defaultDay]);
+  }, [visible, block?.id, defaultDay, defaultTargetChildIds, childUserId]);
+
+  const toggleTargetKid = (id: string) => {
+    setTargetKids((curr) => (curr.includes(id) ? curr.filter((c) => c !== id) : [...curr, id]));
+  };
 
   const toggleDay = (d: number) => {
     setDays((curr) => (curr.includes(d) ? curr.filter((x) => x !== d) : [...curr, d].sort()));
@@ -101,7 +116,8 @@ export function ScheduleEditor({
   const isValid =
     days.length > 0 &&
     endMin > startMin &&
-    apps.length > 0;
+    apps.length > 0 &&
+    (block !== null || targetKids.length > 0);
 
   const save = async () => {
     if (!isValid || submitting) return;
@@ -127,21 +143,25 @@ export function ScheduleEditor({
         return;
       }
     } else {
-      // Create one row per selected day (batch).
-      for (const d of days) {
-        const { error: err } = await upsertScheduleBlock({
-          childUserId,
-          dayOfWeek: d,
-          startMinutes: startMin,
-          endMinutes: endMin,
-          blockedApps: apps,
-          limitMinutes,
-          label,
-        });
-        if (err) {
-          setError(err);
-          setSubmitting(false);
-          return;
+      // Create one row per selected day × per selected kid. Each is independent
+      // so a partial failure surfaces the first error but doesn't roll back
+      // already-created rows (parent can re-save to fill the gap).
+      for (const kidId of targetKids) {
+        for (const d of days) {
+          const { error: err } = await upsertScheduleBlock({
+            childUserId: kidId,
+            dayOfWeek: d,
+            startMinutes: startMin,
+            endMinutes: endMin,
+            blockedApps: apps,
+            limitMinutes,
+            label,
+          });
+          if (err) {
+            setError(err);
+            setSubmitting(false);
+            return;
+          }
         }
       }
       setSubmitting(false);
@@ -186,6 +206,32 @@ export function ScheduleEditor({
               Block specific apps during a recurring time window. Outside this window, the regular
               daily limits apply.
             </Text>
+
+            {!isEdit && linkedChildren.length > 0 && (
+              <>
+                <Text style={styles.fieldLabel}>Apply to which kids</Text>
+                <View style={styles.daysRow}>
+                  {linkedChildren.map((c) => {
+                    const selected = targetKids.includes(c.user_id);
+                    return (
+                      <Pressable
+                        key={c.user_id}
+                        onPress={() => toggleTargetKid(c.user_id)}
+                        style={({ pressed }) => [
+                          styles.dayChip,
+                          selected && styles.dayChipSelected,
+                          pressed && { opacity: 0.85 },
+                        ]}>
+                        <Text style={[
+                          styles.dayChipText,
+                          selected && styles.dayChipTextSelected,
+                        ]}>{c.displayName}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
 
             {!isEdit && (
               <>

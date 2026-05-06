@@ -15,12 +15,14 @@ import {
   View,
 } from 'react-native';
 
+import { ChildBubble } from '@/components/child-bubble';
+import { CollapsibleSection } from '@/components/collapsible-section';
+import { FamilyLimitsEditor } from '@/components/family-limits-editor';
+import { FamilyQuestsSection } from '@/components/family-quests-section';
+import { FamilySchedulePanel } from '@/components/family-schedule-panel';
 import { Mascot } from '@/components/mascot';
-import { ScheduleEditor } from '@/components/schedule-editor';
-import { ScheduleGrid } from '@/components/schedule-grid';
 import { useAuth } from '@/lib/auth-context';
 import { useFocus } from '@/lib/focus-context';
-import { fetchChildSchedule, type ScheduleBlock } from '@/lib/schedule';
 import { supabase } from '@/lib/supabase';
 import { colors, fonts, radius, shadowSm, space } from '@/lib/theme';
 import { fetchChildUpcomingWork, type UpcomingWorkRow as UpcomingWorkRecord } from '@/lib/upcoming-work';
@@ -40,6 +42,7 @@ type ActiveRemoteSession = {
   ends_at: string;
   anchor_title: string | null;
 };
+
 
 function emailPrefix(email: string): string {
   return email.split('@')[0];
@@ -178,7 +181,7 @@ export function FamilyDashboard() {
             {children.map((c) => (
               <ChildBubble
                 key={c.user_id}
-                child={c}
+                displayName={displayLabel(c)}
                 selected={c.user_id === selectedId}
                 hasActiveFocus={!!activeRemoteByChild[c.user_id]}
                 onPress={() => {
@@ -205,6 +208,39 @@ export function FamilyDashboard() {
               }}
             />
           )}
+
+          {/* Family-level rule editors. The kid bubbles above only filter the
+              per-kid display (today stats + pending + upcoming work). These
+              panels compose changes and let the parent pick which kids the
+              changes apply to via in-panel selectors. */}
+          <View style={{ marginTop: 18 }}>
+            <CollapsibleSection icon="trophy-outline" title="Quests & Goals">
+              <FamilyQuestsSection
+                linkedChildren={children.map((c) => ({
+                  user_id: c.user_id,
+                  displayName: displayLabel(c),
+                }))}
+              />
+            </CollapsibleSection>
+
+            <CollapsibleSection icon="time-outline" title="Limits & Locks">
+              <FamilyLimitsEditor
+                linkedChildren={children.map((c) => ({
+                  user_id: c.user_id,
+                  displayName: displayLabel(c),
+                }))}
+              />
+            </CollapsibleSection>
+
+            <CollapsibleSection icon="calendar-outline" title="Schedule">
+              <FamilySchedulePanel
+                linkedChildren={children.map((c) => ({
+                  user_id: c.user_id,
+                  displayName: displayLabel(c),
+                }))}
+              />
+            </CollapsibleSection>
+          </View>
         </>
       )}
 
@@ -274,39 +310,6 @@ export function FamilyDashboard() {
   );
 }
 
-function ChildBubble({
-  child,
-  selected,
-  hasActiveFocus,
-  onPress,
-}: {
-  child: LinkedChild;
-  selected: boolean;
-  hasActiveFocus: boolean;
-  onPress: () => void;
-}) {
-  const display = displayLabel(child);
-  const initial = display.charAt(0).toUpperCase();
-
-  return (
-    <Pressable onPress={onPress} hitSlop={4} style={({ pressed }) => [
-      styles.bubbleWrap,
-      pressed && { transform: [{ scale: 0.96 }] },
-    ]}>
-      <View style={[styles.bubbleRing, selected && styles.bubbleRingSelected]}>
-        <View style={styles.bubble}>
-          <Text style={styles.bubbleInitial}>{initial}</Text>
-        </View>
-        {hasActiveFocus && <View style={styles.bubbleStatusDot} />}
-      </View>
-      <Text
-        style={[styles.bubbleName, selected && styles.bubbleNameSelected]}
-        numberOfLines={1}>
-        {display}
-      </Text>
-    </Pressable>
-  );
-}
 
 function ChildDetail({
   child,
@@ -399,7 +402,6 @@ function ChildDetail({
       )}
 
       <ChildUpcomingWork childUserId={child.user_id} />
-      <ChildSchedule childUserId={child.user_id} />
     </View>
   );
 }
@@ -463,7 +465,7 @@ function ChildUpcomingWork({ childUserId }: { childUserId: string }) {
         <Text style={styles.workEmpty}>
           {lastSyncedAt
             ? 'No upcoming assignments in the next two weeks.'
-            : "Hasn't synced yet — they'll appear here once your child opens FocusFlow and Calendar/Classroom is connected."}
+            : "Hasn't synced yet — they'll appear here once your child opens Pandu and Calendar/Classroom is connected."}
         </Text>
       ) : (
         <View style={{ gap: 6 }}>
@@ -480,117 +482,6 @@ function ChildUpcomingWork({ childUserId }: { childUserId: string }) {
   );
 }
 
-function ChildSchedule({ childUserId }: { childUserId: string }) {
-  const [blocks, setBlocks] = useState<ScheduleBlock[] | null>(null);
-  const [editing, setEditing] = useState<ScheduleBlock | null>(null);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-
-  const refresh = async () => {
-    const rows = await fetchChildSchedule(childUserId);
-    setBlocks(rows);
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchChildSchedule(childUserId).then((rows) => {
-      if (!cancelled) setBlocks(rows);
-    });
-    return () => { cancelled = true; };
-  }, [childUserId]);
-
-  // Realtime: refetch when any of the child's schedule rows change.
-  useEffect(() => {
-    const channel = supabase
-      .channel(`schedule:${childUserId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'child_schedule_blocks',
-          filter: `child_user_id=eq.${childUserId}`,
-        },
-        () => { refresh(); },
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [childUserId]);
-
-  const openNew = () => {
-    setEditing(null);
-    setEditorOpen(true);
-    if (!expanded) setExpanded(true);
-  };
-
-  const openEdit = (block: ScheduleBlock) => {
-    setEditing(block);
-    setEditorOpen(true);
-  };
-
-  const count = blocks?.length ?? 0;
-  const summary =
-    count === 0
-      ? 'No windows'
-      : count === 1
-        ? '1 window'
-        : `${count} windows`;
-
-  return (
-    <View style={styles.scheduleWrap}>
-      <View style={styles.scheduleHeader}>
-        <Pressable
-          onPress={() => setExpanded((x) => !x)}
-          hitSlop={6}
-          style={({ pressed }) => [styles.scheduleHeaderToggle, pressed && { opacity: 0.85 }]}>
-          <Ionicons
-            name={expanded ? 'chevron-down' : 'chevron-forward'}
-            size={14}
-            color={colors.textMuted}
-          />
-          <Text style={styles.scheduleSectionLabel}>Schedule</Text>
-          {!expanded && count > 0 && (
-            <Text style={styles.scheduleSummary}>· {summary}</Text>
-          )}
-        </Pressable>
-        <Pressable
-          onPress={openNew}
-          hitSlop={6}
-          style={({ pressed }) => [styles.scheduleAddBtn, pressed && { opacity: 0.85 }]}>
-          <Ionicons name="add" size={16} color={colors.accent} />
-          <Text style={styles.scheduleAddText}>New window</Text>
-        </Pressable>
-      </View>
-
-      {expanded && (
-        <View style={{ marginTop: 10 }}>
-          {blocks === null ? (
-            <ActivityIndicator color={colors.textMuted} style={{ marginVertical: 16 }} />
-          ) : (
-            <>
-              <ScheduleGrid blocks={blocks} onBlockPress={openEdit} />
-              {blocks.length === 0 && (
-                <Text style={styles.scheduleEmpty}>
-                  No windows yet. Tap "New window" to block apps fully or set a tighter cap during
-                  recurring time slots like school hours or homework time.
-                </Text>
-              )}
-            </>
-          )}
-        </View>
-      )}
-
-      <ScheduleEditor
-        visible={editorOpen}
-        childUserId={childUserId}
-        block={editing}
-        onClose={() => setEditorOpen(false)}
-        onSaved={refresh}
-      />
-    </View>
-  );
-}
 
 function UpcomingWorkRow({
   item,

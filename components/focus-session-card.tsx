@@ -38,19 +38,29 @@ function IdleCard({
   role: 'parent' | 'student' | null;
 }) {
   const [duration, setDuration] = useState(DEFAULT_DURATION);
-  const { googleAccessToken } = useAuth();
+  const { googleAccessToken, getClassroomAccessToken } = useAuth();
   const [classroomItems, setClassroomItems] = useState<ClassroomAssignment[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const isStudent = role === 'student';
 
   // Pull upcoming Classroom assignments so the student can anchor the session
   // to one. The Phase B auto-end only triggers when a Classroom anchor is set.
+  // Uses the secondary school account when linked, falling back to primary.
   useEffect(() => {
     if (!isStudent || !googleAccessToken) return;
-    fetchClassroomAssignments(googleAccessToken, { daysAhead: 14 })
-      .then((items) => setClassroomItems(items))
-      .catch(() => setClassroomItems([]));
-  }, [isStudent, googleAccessToken]);
+    let cancelled = false;
+    (async () => {
+      const token = await getClassroomAccessToken();
+      if (cancelled || !token) return;
+      try {
+        const items = await fetchClassroomAssignments(token, { daysAhead: 14 });
+        if (!cancelled) setClassroomItems(items);
+      } catch {
+        if (!cancelled) setClassroomItems([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isStudent, googleAccessToken, getClassroomAccessToken]);
 
   const selected = classroomItems?.find((c) => c.id === selectedId) ?? null;
 

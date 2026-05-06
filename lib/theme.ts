@@ -1,4 +1,4 @@
-// Centralized design tokens for FocusFlow.
+// Centralized design tokens for Pandu.
 // Warm cream background + vibrant green accent — kid-friendly, optimistic,
 // pairs well with the black/white panda mascot.
 

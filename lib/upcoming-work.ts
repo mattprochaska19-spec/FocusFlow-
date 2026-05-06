@@ -52,7 +52,7 @@ export async function fetchChildUpcomingWork(childUserId: string): Promise<Upcom
     .order('due_at', { ascending: true, nullsFirst: false });
 
   if (error) {
-    console.warn('[FocusFlow] fetchChildUpcomingWork failed:', error.message);
+    console.warn('[Pandu] fetchChildUpcomingWork failed:', error.message);
     return [];
   }
 

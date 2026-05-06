@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Mascot } from '@/components/mascot';
 import { useAuth, type SignUpRole } from '@/lib/auth-context';
+import { exchangeAuthCode } from '@/lib/google-oauth';
 import { FontAwesome } from '@expo/vector-icons';
 import { colors, radius, shadowSm, space } from '@/lib/theme';
 
@@ -23,12 +24,12 @@ type Mode = 'signin' | 'signup';
 
 export default function SignInScreen() {
   const insets = useSafeAreaInsets();
-  const { signIn, signUp, signInWithGoogleIdToken, setGoogleAccessToken } = useAuth();
+  const { signIn, signUp, signInWithGoogleIdToken, setGoogleTokens } = useAuth();
 
-  // Native Google sign-in via the iOS OAuth client — no redirect URL involved.
-  // Calendar + Classroom scopes are requested upfront so the access token can
-  // hit both APIs without a second consent prompt. Adding new scopes triggers
-  // Google's incremental consent on the next sign-in for existing users.
+  // Native Google sign-in via the iOS OAuth client. Code flow + offline access
+  // (the only path that yields a refresh token), so the access token can be
+  // silently renewed forever instead of forcing a re-sign-in every hour.
+  // Adding new scopes triggers Google's incremental consent on next sign-in.
   const [googleRequest, googleResponse, promptGoogle] = Google.useAuthRequest({
     iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
     scopes: [
@@ -40,6 +41,14 @@ export default function SignInScreen() {
       'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
       'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly',
     ],
+    responseType: 'code',
+    shouldAutoExchangeCode: false,
+    extraParams: {
+      access_type: 'offline',
+      // prompt=consent forces Google to re-issue a refresh token — without it,
+      // returning users who already consented previously won't get one.
+      prompt: 'consent',
+    },
   });
 
   // Latest role/code at the moment Google returns — refs survive across the
@@ -103,7 +112,10 @@ export default function SignInScreen() {
     // The actual sign-in completes in the useEffect below when googleResponse fires
   };
 
-  // When Google returns with an id_token, exchange it for a Supabase session
+  // Code-flow Google sign-in: when Google returns with a code, exchange it
+  // ourselves to get access + refresh + id tokens, then hand the id_token to
+  // Supabase. Storing the refresh token unlocks transparent renewal so users
+  // never see "Google session expired" again.
   useEffect(() => {
     if (!googleResponse) return;
     if (googleResponse.type !== 'success') {
@@ -113,36 +125,49 @@ export default function SignInScreen() {
       }
       return;
     }
-    const idToken = googleResponse.authentication?.idToken;
-    const accessToken = googleResponse.authentication?.accessToken ?? null;
-    if (!idToken) {
+    const code = googleResponse.params.code;
+    const codeVerifier = googleRequest?.codeVerifier;
+    const redirectUri = googleRequest?.redirectUri;
+    const clientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
+    if (!code || !codeVerifier || !redirectUri || !clientId) {
       setGoogleSubmitting(false);
-      setError('Google did not return an ID token');
+      setError('Google did not return a code/verifier/redirectUri');
       return;
     }
     (async () => {
-      const result = await signInWithGoogleIdToken(idToken, {
-        role: modeRef.current === 'signup' ? roleRef.current : undefined,
-        familyCode:
-          modeRef.current === 'signup' && roleRef.current === 'student'
-            ? familyCodeRef.current
-            : undefined,
-      });
-      setGoogleSubmitting(false);
-      if (result.error) {
-        setError(result.error);
-        return;
-      }
-      // Persist Google access token after Supabase exchange succeeds — it
-      // unlocks Calendar + Classroom API calls in the rest of the app.
-      if (accessToken) await setGoogleAccessToken(accessToken);
-      if (result.needsRoleSetup) {
-        setInfo(
-          "Signed in with Google. Switch to 'Create one' below and pick Parent or Student to finish setup.",
-        );
+      try {
+        const tokens = await exchangeAuthCode({ code, codeVerifier, clientId, redirectUri });
+        if (!tokens.idToken) {
+          setGoogleSubmitting(false);
+          setError('Google did not return an ID token');
+          return;
+        }
+        // Google sign-in always defers role + family-code selection to the
+        // dedicated /(auth)/setup-role screen so the user can't accidentally
+        // get the wrong role. The form's role/code fields here are only used
+        // for the email/password signup flow.
+        const result = await signInWithGoogleIdToken(tokens.idToken, {});
+        setGoogleSubmitting(false);
+        if (result.error) {
+          setError(result.error);
+          return;
+        }
+        // Persist the full token bundle (access + refresh + expiry) so the
+        // app can transparently renew tokens for the lifetime of the refresh
+        // token (long-lived; effectively forever unless revoked).
+        await setGoogleTokens({
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+          expiresAt: tokens.expiresAt,
+        });
+        // result.needsRoleSetup → AuthGate forwards to /(auth)/setup-role
+        // automatically. No info message needed; the screen change is the cue.
+      } catch (e) {
+        setGoogleSubmitting(false);
+        setError(e instanceof Error ? e.message : 'Google token exchange failed');
       }
     })();
-  }, [googleResponse, signInWithGoogleIdToken, setGoogleAccessToken]);
+  }, [googleResponse, googleRequest, signInWithGoogleIdToken, setGoogleTokens]);
 
   return (
     <KeyboardAvoidingView
@@ -153,7 +178,7 @@ export default function SignInScreen() {
         keyboardShouldPersistTaps="handled">
         <View style={styles.brandWrap}>
           <Mascot pose="excited" size="xl" />
-          <Text style={styles.brand}>FocusFlow</Text>
+          <Text style={styles.brand}>Pandu</Text>
           <Text style={styles.tagline}>Less scroll. More learn.</Text>
         </View>
 
