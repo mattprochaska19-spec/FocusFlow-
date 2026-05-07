@@ -21,6 +21,8 @@ import { FamilyLimitsEditor } from '@/components/family-limits-editor';
 import { FamilyQuestsSection } from '@/components/family-quests-section';
 import { FamilySchedulePanel } from '@/components/family-schedule-panel';
 import { Mascot } from '@/components/mascot';
+import { StreakBadge } from '@/components/streak-badge';
+import { computeStreak } from '@/lib/streak';
 import { useAuth } from '@/lib/auth-context';
 import { useFocus } from '@/lib/focus-context';
 import { supabase } from '@/lib/supabase';
@@ -34,6 +36,10 @@ type LinkedChild = {
   entertainment_seconds: number;
   educational_seconds: number;
   video_count: number;
+  // School Google account email if the kid has linked Classroom from their
+  // device; null otherwise. Mirrored from profiles.classroom_account_email
+  // so parents can see link status without exposing tokens.
+  classroomAccountEmail: string | null;
 };
 
 type ActiveRemoteSession = {
@@ -70,11 +76,12 @@ export function FamilyDashboard() {
   const refresh = async () => {
     setLoading(true);
     setError(null);
-    // Fetch stats and display names in parallel — kept as separate RPCs so we
-    // don't have to migrate get_my_children_with_stats.
-    const [statsRes, namesRes] = await Promise.all([
+    // Stats, display names, and Classroom emails fan out in parallel — kept
+    // as separate RPCs to avoid touching get_my_children_with_stats.
+    const [statsRes, namesRes, emailsRes] = await Promise.all([
       supabase.rpc('get_my_children_with_stats', { stats_date: todayDate }),
       supabase.rpc('get_child_display_names'),
+      supabase.rpc('get_child_classroom_emails'),
     ]);
     setLoading(false);
     if (statsRes.error) {
@@ -85,9 +92,14 @@ export function FamilyDashboard() {
     for (const n of (namesRes.data ?? []) as { user_id: string; display_name: string | null }[]) {
       if (n.display_name) namesMap.set(n.user_id, n.display_name);
     }
-    const list = ((statsRes.data ?? []) as Omit<LinkedChild, 'displayName'>[]).map((c) => ({
+    const emailsMap = new Map<string, string | null>();
+    for (const e of (emailsRes.data ?? []) as { user_id: string; email: string | null }[]) {
+      emailsMap.set(e.user_id, e.email);
+    }
+    const list = ((statsRes.data ?? []) as Omit<LinkedChild, 'displayName' | 'classroomAccountEmail'>[]).map((c) => ({
       ...c,
       displayName: namesMap.get(c.user_id) ?? null,
+      classroomAccountEmail: emailsMap.get(c.user_id) ?? null,
     }));
     setChildren(list);
     // Auto-select first child once loaded so the detail panel always has a target.
@@ -326,11 +338,18 @@ function ChildDetail({
   focusOn: boolean;
   onRename: () => void;
 }) {
+  const { questClaims } = useFocus();
   const entMins = Math.floor(child.entertainment_seconds / 60);
   const eduMins = Math.floor(child.educational_seconds / 60);
   const overLimit = focusOn && entMins >= limitMinutes;
   const pct = limitMinutes > 0 ? Math.min(100, (entMins / limitMinutes) * 100) : 0;
   const name = displayLabel(child);
+
+  // Per-child streak — same compute as the kid's own Goals tab, just scoped
+  // to this child's claims.
+  const streak = computeStreak(
+    questClaims.filter((c) => c.childUserId === child.user_id),
+  );
 
   return (
     <View style={styles.detailCard}>
@@ -341,6 +360,7 @@ function ChildDetail({
             <Pressable onPress={onRename} hitSlop={8} style={styles.detailRenameBtn}>
               <Ionicons name="create-outline" size={14} color={colors.textMuted} />
             </Pressable>
+            <StreakBadge count={streak} variant="compact" style={{ marginLeft: 6 }} />
           </View>
           <Text style={styles.detailMetaSecondary}>
             {activeSession ? 'Focus active · entertainment locked' : 'Idle'}
@@ -383,6 +403,11 @@ function ChildDetail({
         {entMins} of {limitMinutes}m entertainment today
       </Text>
 
+      <ClassroomLinkStatus
+        childName={name}
+        email={child.classroomAccountEmail}
+      />
+
       {pendingClaims.length > 0 && (
         <View style={styles.pendingWrap}>
           <Text style={styles.pendingHeader}>
@@ -402,6 +427,42 @@ function ChildDetail({
       )}
 
       <ChildUpcomingWork childUserId={child.user_id} />
+    </View>
+  );
+}
+
+// Compact status row showing whether a child has linked Google Classroom on
+// their device. Read-only from the parent's side — kids own the OAuth flow
+// because tokens are device-bound. Parents see the email when linked, a
+// "not linked" hint when missing, and a quick instruction so they know how
+// to ask the kid to do it.
+function ClassroomLinkStatus({
+  childName,
+  email,
+}: {
+  childName: string;
+  email: string | null;
+}) {
+  const linked = !!email;
+  return (
+    <View style={[styles.classroomStatus, linked ? styles.classroomStatusOn : styles.classroomStatusOff]}>
+      <View style={[styles.classroomIconWrap, linked && styles.classroomIconWrapOn]}>
+        <Ionicons
+          name={linked ? 'school' : 'school-outline'}
+          size={14}
+          color={linked ? colors.accent : colors.textMuted}
+        />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.classroomLabel}>Google Classroom</Text>
+        {linked ? (
+          <Text style={styles.classroomEmail} numberOfLines={1}>{email}</Text>
+        ) : (
+          <Text style={styles.classroomHint}>
+            Not linked. Ask {childName} to open Account → School Classroom Account.
+          </Text>
+        )}
+      </View>
     </View>
   );
 }
@@ -774,6 +835,48 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
   emptyBody: { color: colors.textMuted, fontSize: 12, lineHeight: 17, textAlign: 'center' },
+
+  // Classroom link status row inside ChildDetail
+  classroomStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    marginTop: 14,
+  },
+  classroomStatusOn: { backgroundColor: colors.accentSoft, borderColor: colors.accentBorder },
+  classroomStatusOff: { backgroundColor: colors.surfaceMuted, borderColor: colors.borderSubtle },
+  classroomIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  classroomIconWrapOn: { borderWidth: 0.5, borderColor: colors.accentBorder },
+  classroomLabel: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontFamily: fonts.bold,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  classroomEmail: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontFamily: fonts.semibold,
+    marginTop: 2,
+  },
+  classroomHint: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: 2,
+  },
 
   // Netflix-style profile bubbles
   bubbleRow: {

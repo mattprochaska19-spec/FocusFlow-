@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChannelSearch } from '@/components/channel-search';
 import { ClassroomLinkSection } from '@/components/classroom-link-section';
 import { CollapsibleSection } from '@/components/collapsible-section';
+import { Tooltip } from '@/components/tooltip';
 import { decideAccess, describeDecision, type AccessDecision } from '@/lib/access';
 import { useAuth } from '@/lib/auth-context';
 import { useFocus } from '@/lib/focus-context';
@@ -63,6 +64,14 @@ export default function SettingsScreen() {
             ? 'Your parent manages the rules. They sync to this device automatically.'
             : 'Tune the rules that keep you focused.'}
         </Text>
+
+        {!isStudent && (
+          <Tooltip
+            id="settings-tab-intro"
+            title="Global rules live here"
+            body="Your family code is at the top — share it with your kids so they can join. Behavior, channels, and override controls are below. Per-child rules live in the Family tab."
+          />
+        )}
 
         {/* Parent: Family Code at top of Settings (per redesign).
             Student: link-to-parent form. */}

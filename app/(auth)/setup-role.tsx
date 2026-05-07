@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { useState } from 'react';
 import {
   ActivityIndicator,
@@ -59,6 +60,12 @@ export default function SetupRoleScreen() {
     // Profile is now created on the server; pull it into focus-context so the
     // app re-renders into the appropriate per-role tabs.
     reloadProfile();
+    // Parents go through the conversion-focused onboarding survey before
+    // landing in the app. Students skip — onboarding is parent-facing copy
+    // (asks about "your child"). AuthGate handles the student route to /.
+    if (role === 'parent') {
+      router.replace('/(auth)/onboarding');
+    }
   };
 
   return (

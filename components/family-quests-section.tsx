@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { QuestEditorModal } from '@/components/quest-editor-modal';
+import { Tooltip } from '@/components/tooltip';
 import { useFocus, type ParentQuest, type QuestKind } from '@/lib/focus-context';
 import { colors, fonts, radius } from '@/lib/theme';
 
@@ -38,6 +39,12 @@ export function FamilyQuestsSection({ linkedChildren }: { linkedChildren: Linked
 
   return (
     <View>
+      <Tooltip
+        id="reward-builder-intro"
+        variant="inline"
+        title="Build rewards for your kids"
+        body="Goals are big-picture wins ('Finish your weekly homework'); Extra Work is optional tasks ('Do 3 Khan lessons'). Both pay out screen time when you approve a claim. Tap Add to create one."
+      />
       <QuestList
         title="Bonus Goals"
         emptyHint="No goals yet. Create one to give your kids a target — they claim when done, you approve."

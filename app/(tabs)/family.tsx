@@ -2,6 +2,7 @@ import { ScrollView, StyleSheet, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FamilyDashboard } from '@/components/family-dashboard';
+import { Tooltip } from '@/components/tooltip';
 import { useFocus } from '@/lib/focus-context';
 import { colors, fonts, space } from '@/lib/theme';
 
@@ -21,6 +22,12 @@ export default function FamilyScreen() {
       <Text style={styles.pageSub}>
         Per-child rules, schedules, and quests. Family code lives in Settings.
       </Text>
+
+      <Tooltip
+        id="family-tab-intro"
+        title="This is your family page"
+        body="Tap a kid's bubble to see their daily progress, pending reviews, and upcoming work. Rules, quests, and schedule editors live in the panels below — they apply to whichever kids you select."
+      />
 
       <FamilyDashboard />
     </ScrollView>

@@ -4,6 +4,7 @@ import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-nat
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChildBubble } from '@/components/child-bubble';
+import { Tooltip } from '@/components/tooltip';
 import { useFocus, type ChildOverride } from '@/lib/focus-context';
 import { supabase } from '@/lib/supabase';
 import { colors, fonts, radius, shadowSm, space } from '@/lib/theme';
@@ -34,6 +35,14 @@ export default function ActivityScreen() {
       <Text style={styles.pageSub}>
         {isParent ? 'Per-child viewing today.' : `Today, ${formatDate(todayKey())}`}
       </Text>
+
+      {isParent && (
+        <Tooltip
+          id="activity-tab-intro"
+          title="Today's screen-time dashboard"
+          body="Tap a kid's bubble to filter by them. The bars show their top channels and what kinds of videos they're spending time on. Updates in real time as they watch."
+        />
+      )}
 
       {isParent ? <ParentActivity /> : <StudentActivity />}
     </ScrollView>

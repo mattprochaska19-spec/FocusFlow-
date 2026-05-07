@@ -12,6 +12,7 @@ import {
   Inter_800ExtraBold,
   useFonts,
 } from '@expo-google-fonts/inter';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -19,6 +20,7 @@ import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import 'react-native-reanimated';
 
+import { onboardingDoneKey } from '@/app/(auth)/onboarding';
 import { AuthProvider, useAuth } from '@/lib/auth-context';
 import { FocusProvider, useFocus } from '@/lib/focus-context';
 import { colors } from '@/lib/theme';
@@ -47,27 +49,72 @@ function AuthGate() {
 
   useEffect(() => {
     if (loading) return;
-    const inAuthGroup = segments[0] === '(auth)';
-    const onSetupRole = inAuthGroup && segments[1] === 'setup-role';
+    let cancelled = false;
+    (async () => {
+      // Read AsyncStorage inline so the routing decision uses the freshest
+      // onboarding flag — no race against a separately-cached state value
+      // when the user just completed onboarding and we navigate to /.
+      // Key is scoped per user so signing out + back in as the same parent
+      // doesn't re-trigger onboarding; a different user gets a fresh funnel.
+      const onboardingDone = session?.user.id
+        ? (await AsyncStorage.getItem(onboardingDoneKey(session.user.id))) === '1'
+        : false;
+      if (cancelled) return;
 
-    // Not signed in → push to sign-in (unless already in auth group)
-    if (!session && !inAuthGroup) {
-      router.replace('/(auth)/sign-in');
-      return;
-    }
+      const inAuthGroup = segments[0] === '(auth)';
+      const onSetupRole = inAuthGroup && segments[1] === 'setup-role';
+      const onOnboarding = inAuthGroup && segments[1] === 'onboarding';
+      const onWalkthrough = inAuthGroup && segments[1] === 'walkthrough';
 
-    // Signed in but no profile yet — finish role setup before entering the app.
-    // We wait for profileLoaded to flip true so we don't bounce them while
-    // the profile fetch is still in flight.
-    if (session && profileLoaded && !profile && !onSetupRole) {
-      router.replace('/(auth)/setup-role');
-      return;
-    }
+      // Not signed in → push to sign-in (unless already in auth group)
+      if (!session && !inAuthGroup) {
+        router.replace('/(auth)/sign-in');
+        return;
+      }
 
-    // Signed in with a profile, but stuck on an auth screen → drop into app.
-    if (session && profile && inAuthGroup) {
-      router.replace('/');
-    }
+      // Signed in but no profile yet — finish role setup before entering the
+      // app. Wait for profileLoaded so we don't bounce mid-fetch.
+      if (session && profileLoaded && !profile && !onSetupRole && !onOnboarding) {
+        router.replace('/(auth)/setup-role');
+        return;
+      }
+
+      // Signed-in parent who hasn't seen onboarding yet → route to it.
+      // Catches force-quits mid-flow and existing accounts pre-onboarding.
+      if (
+        session &&
+        profile &&
+        profile.role === 'parent' &&
+        !onboardingDone &&
+        !onOnboarding
+      ) {
+        router.replace('/(auth)/onboarding');
+        return;
+      }
+
+      // Signed-in parent past onboarding but who hasn't completed the
+      // tap-through walkthrough → route to it. Walkthrough completion is
+      // tracked server-side on the profile so it persists across devices.
+      if (
+        session &&
+        profile &&
+        profile.role === 'parent' &&
+        onboardingDone &&
+        !profile.walkthroughCompletedAt &&
+        !onWalkthrough
+      ) {
+        router.replace('/(auth)/walkthrough');
+        return;
+      }
+
+      // Signed in with a profile, but stuck on an auth screen → drop into app.
+      // Don't override when intentionally on onboarding/walkthrough — those
+      // screens own their own exits.
+      if (session && profile && inAuthGroup && !onOnboarding && !onWalkthrough) {
+        router.replace('/');
+      }
+    })();
+    return () => { cancelled = true; };
   }, [loading, session, profile, profileLoaded, segments, router]);
 
   if (loading) {

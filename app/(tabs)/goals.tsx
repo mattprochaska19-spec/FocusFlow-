@@ -5,8 +5,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Mascot } from '@/components/mascot';
 import { SpeechBubble } from '@/components/speech-bubble';
+import { StreakBadge } from '@/components/streak-badge';
 import { useAuth } from '@/lib/auth-context';
 import { useFocus, type ParentQuest, type QuestClaim } from '@/lib/focus-context';
+import { computeStreak } from '@/lib/streak';
 import { colors, fonts, radius, shadowSm, space } from '@/lib/theme';
 
 export default function GoalsScreen() {
@@ -24,6 +26,13 @@ export default function GoalsScreen() {
       if (!map.has(c.questId)) map.set(c.questId, c);
     }
     return map;
+  }, [questClaims, session?.user.id]);
+
+  // Streak count from quest claims — pending and approved both count, rejected
+  // does not. Computed locally; cheap.
+  const streak = useMemo(() => {
+    if (!session) return 0;
+    return computeStreak(questClaims.filter((c) => c.childUserId === session.user.id));
   }, [questClaims, session?.user.id]);
 
   const goals = quests.filter((q) => q.kind === 'goal');
@@ -44,6 +53,8 @@ export default function GoalsScreen() {
           style={styles.mascotBubble}
         />
       </View>
+
+      <StreakBadge count={streak} style={{ marginBottom: 24 }} />
 
       <Section title="Bonus Goals" empty="No goals yet — your parent can add some.">
         {goals.map((q) => (

@@ -22,6 +22,14 @@ import { colors, radius, shadowSm, space } from '@/lib/theme';
 
 type Mode = 'signin' | 'signup';
 
+// Module-level dedup for Google authorization codes. Lives outside the React
+// tree so it survives effect re-fires, strict-mode double-mounts, and any
+// case where the response object's reference changes across renders. Codes
+// are single-use, so re-attempting a previously-seen code always fails with
+// 400 — silently swallowing the duplicate request keeps the user from seeing
+// a phantom error after the real exchange has already succeeded.
+const processedGoogleCodes = new Set<string>();
+
 export default function SignInScreen() {
   const insets = useSafeAreaInsets();
   const { signIn, signUp, signInWithGoogleIdToken, setGoogleTokens } = useAuth();
@@ -126,6 +134,11 @@ export default function SignInScreen() {
       return;
     }
     const code = googleResponse.params.code;
+    // Module-level dedup: codes are single-use, so a re-fired effect (auth
+    // context re-renders, strict-mode double-mounts, etc.) would otherwise
+    // attempt the exchange a second time and surface a phantom 400 error.
+    if (!code || processedGoogleCodes.has(code)) return;
+    processedGoogleCodes.add(code);
     const codeVerifier = googleRequest?.codeVerifier;
     const redirectUri = googleRequest?.redirectUri;
     const clientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;

@@ -96,6 +96,11 @@ export type Profile = {
   familyCode: string | null;
   parentId: string | null;
   displayName: string | null;
+  // First-time-UI state, loaded from profiles. Tooltip ids the user has
+  // already dismissed (so they're never shown again), and a timestamp set
+  // once the parent walkthrough has been finished.
+  dismissedTooltips: string[];
+  walkthroughCompletedAt: string | null;
 };
 
 export type AssignmentStatus = 'pending_review' | 'completed' | 'rejected';
@@ -275,6 +280,10 @@ type FocusContextValue = {
   scheduleBlocks: ScheduleBlock[];
   resetToday: () => void;
   reloadProfile: () => void;
+  // Optimistic: stamps the local profile's walkthroughCompletedAt so AuthGate
+  // doesn't re-route the user back into the walkthrough during the brief
+  // window between the RPC succeeding and reloadProfile's fetch landing.
+  markWalkthroughCompleteLocally: () => void;
 };
 
 const FocusContext = createContext<FocusContextValue | null>(null);
@@ -401,7 +410,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       // Step 1: load own profile (role + parent_id determine where settings come from)
       const { data: profileRow } = await supabase
         .from('profiles')
-        .select('user_id, role, family_code, parent_id, display_name')
+        .select('user_id, role, family_code, parent_id, display_name, dismissed_tooltips, walkthrough_completed_at')
         .eq('user_id', userId)
         .maybeSingle();
       if (cancelled) return;
@@ -413,6 +422,8 @@ export function FocusProvider({ children }: { children: ReactNode }) {
             familyCode: profileRow.family_code ?? null,
             parentId: profileRow.parent_id ?? null,
             displayName: profileRow.display_name ?? null,
+            dismissedTooltips: (profileRow.dismissed_tooltips as string[] | null) ?? [],
+            walkthroughCompletedAt: profileRow.walkthrough_completed_at ?? null,
           }
         : null;
       setProfile(myProfile);
@@ -723,6 +734,12 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   // (e.g. linking to a parent via family code).
   const reloadProfile = useCallback(() => {
     setReloadKey((k) => k + 1);
+  }, []);
+
+  const markWalkthroughCompleteLocally = useCallback(() => {
+    setProfile((p) =>
+      p ? { ...p, walkthroughCompletedAt: new Date().toISOString() } : p,
+    );
   }, []);
 
   // Today's approved assignments, used to compute earned minutes and the
@@ -1197,6 +1214,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     scheduleBlocks,
     resetToday,
     reloadProfile,
+    markWalkthroughCompleteLocally,
   };
 
   return <FocusContext.Provider value={value}>{children}</FocusContext.Provider>;

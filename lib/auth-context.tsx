@@ -170,12 +170,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const saveClassroomTokens = useCallback(async (tokens: ClassroomTokens) => {
     await persistClassroomTokens(tokens);
     setClassroomAccountEmail(tokens.email);
-  }, []);
+    // Mirror the email on the kid's profile so the parent's Family tab can
+    // render a "Classroom: linked as foo@school.edu" status. Tokens stay
+    // device-local; only the address is shared.
+    if (tokens.email && session) {
+      await supabase
+        .from('profiles')
+        .update({ classroom_account_email: tokens.email })
+        .eq('user_id', session.user.id);
+    }
+  }, [session]);
 
   const unlinkClassroomAccount = useCallback(async () => {
     await revokeAndClearClassroomTokens();
     setClassroomAccountEmail(null);
-  }, []);
+    if (session) {
+      await supabase
+        .from('profiles')
+        .update({ classroom_account_email: null })
+        .eq('user_id', session.user.id);
+    }
+  }, [session]);
 
   // Returns the school token if we have one (auto-refreshing if stale),
   // otherwise falls back to the primary Google token (also auto-refreshed
@@ -230,6 +245,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // sense leaking it across users on a shared device.
     await revokeAndClearClassroomTokens();
     setClassroomAccountEmail(null);
+    // Onboarding flag is now scoped by user_id (see onboardingDoneKey), so
+    // it persists across sign-out/sign-in for the same user without leaking
+    // state to other users on the device. No clear needed here.
   };
 
   const deleteAccount: AuthContextValue['deleteAccount'] = async () => {
@@ -248,6 +266,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setGoogleAccessTokenState(null);
     await revokeAndClearClassroomTokens();
     setClassroomAccountEmail(null);
+    // Onboarding flag is per-user so deletion of THIS account leaves an
+    // orphaned key, but it's harmless (the user_id will never sign in again).
     return {};
   };
 
